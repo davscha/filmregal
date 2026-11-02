@@ -10,6 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Properties
 
+/** Ordner, die Windows bzw. die FritzBox selbst anlegen. */
+private val SYSTEM_FOLDERS = setOf("system volume information", "fritz", "lost+found", "recycler", "found.000")
+
 val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "webm", "ts", "m2ts", "wmv", "mpg", "mpeg")
 
 object Nas {
@@ -57,7 +60,8 @@ object Nas {
         }
     }
 
-    @Volatile private var working = 0
+    /** Index des funktionierenden Anmeldeverfahrens; wird in den Einstellungen gemerkt. */
+    @Volatile var working = 0
     val workingLabel get() = variants[working].label
 
     private fun context(cfg: NasConfig, i: Int): CIFSContext =
@@ -94,7 +98,8 @@ object Nas {
                     val isDir = f.name.endsWith("/")
                     val name = f.name.trimEnd('/')
                     f.close()
-                    if (name.startsWith(".") || name.startsWith("@") || name.endsWith("$")) return@mapNotNull null
+                    if (name.startsWith(".") || name.startsWith("@") || name.startsWith("$") || name.endsWith("$")) return@mapNotNull null
+                    if (isDir && name.lowercase() in SYSTEM_FOLDERS) return@mapNotNull null
                     if (!isDir && name.substringAfterLast('.', "").lowercase() !in VIDEO_EXTENSIONS) return@mapNotNull null
                     Entry(name, joinPath(path, name), isDir)
                 }

@@ -74,6 +74,10 @@ class Settings(context: Context) {
                 .apply()
         }
 
+    var smbVariant: Int
+        get() = p.getInt("smbVariant", 0)
+        set(v) = p.edit().putInt("smbVariant", v).apply()
+
     var tmdbKey: String
         get() = p.getString("tmdb", "")!!
         set(v) = p.edit().putString("tmdb", v.trim()).apply()
@@ -182,6 +186,10 @@ class Deps private constructor(context: Context) {
     val settings = Settings(context)
     val store = Store(context)
     val meta = MetaRepo(context, settings)
+
+    init {
+        Nas.working = settings.smbVariant.coerceIn(0, 3)
+    }
 
     fun itemFor(e: Entry) = Item(e.path, meta.peek(e)?.title ?: Titles.clean(e.name, e.isDir).first)
 

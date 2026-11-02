@@ -164,7 +164,7 @@ fun App(d: Deps) {
         if (!nas.isComplete) return@LaunchedEffect
         libError = null
         attempt { Nas.list(nas, nas.root).filter { it.isDir } }
-            .onSuccess { libs = it }
+            .onSuccess { libs = it; d.settings.smbVariant = Nas.working }
             .onFailure { libError = it.message ?: it.javaClass.simpleName }
     }
 
@@ -744,6 +744,7 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = {
+                    d.settings.smbVariant = Nas.working
                     d.settings.nas = current()
                     d.settings.tmdbKey = tmdb
                     onSaved()

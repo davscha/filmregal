@@ -109,6 +109,13 @@ object Nas {
         f to f.length()
     }
 
+    /** Listet die Freigaben des Servers (z. B. FRITZ.NAS oder den Namen der USB-Platte). */
+    fun shares(cfg: NasConfig): List<String> = withAuth(cfg) { ctx ->
+        SmbFile("smb://${cfg.host}/", ctx).use { root ->
+            root.listFiles().map { it.name.trimEnd('/') }.filter { !it.endsWith("$") }
+        }
+    }
+
     /** Prüft Schritt für Schritt: Namensauflösung, Ports, Anmeldung, Ordnerliste. */
     suspend fun diagnose(cfg: NasConfig, report: (String) -> Unit) = withContext(Dispatchers.IO) {
         val lines = mutableListOf<String>()
@@ -149,6 +156,15 @@ object Nas {
                 t = t.cause
             }
             say("✗ Fehler nach ${(System.currentTimeMillis() - start) / 1000} s:\n" + chain.joinToString("\n"))
+            try {
+                val names = shares(cfg)
+                say("Vorhandene Freigaben: ${names.joinToString(", ").ifEmpty { "keine" }}")
+                if (names.isNotEmpty() && names.none { it.equals(cfg.share, ignoreCase = true) }) {
+                    say("→ Trag bei „Freigabe“ einen dieser Namen ein")
+                }
+            } catch (e2: Exception) {
+                say("Freigaben konnten nicht gelistet werden: ${e2.message}")
+            }
         }
     }
 }

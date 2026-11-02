@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bildschirm -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M37,32 h34 a5,5 0 0 1 5,5 v28 a5,5 0 0 1 -5,5 h-34 a5,5 0 0 1 -5,-5 v-28 a5,5 0 0 1 5,-5 z" />
+    <!-- Play-Dreieck -->
+    <path
+        android:fillColor="#1E6FD9"
+        android:pathData="M48,41 L64,51 L48,61 z" />
+    <!-- Regalbrett -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,75 h48 v4 h-48 z" />
+</vector>

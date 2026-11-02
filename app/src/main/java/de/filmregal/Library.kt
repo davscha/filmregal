@@ -91,6 +91,22 @@ class LibraryStore(context: Context) {
         fileFor(root).writeText(JSONObject().put("scannedAt", data.scannedAt).put("paths", a).toString())
     }
 
+    /** Alle Folgen derselben Serie aus allen gespeicherten Bibliotheken (für "Nächste Folge"). */
+    fun episodesOf(e: Episode): List<Episode> {
+        dir.listFiles()?.forEach { f ->
+            runCatching {
+                val o = JSONObject(f.readText())
+                val a = o.getJSONArray("paths")
+                val paths = (0 until a.length()).map { a.getString(it) }
+                if (paths.contains(e.path)) {
+                    return LibraryData(paths.map { classify(it) }, 0).shows
+                        .firstOrNull { it.name.equals(e.show, ignoreCase = true) }?.episodes ?: listOf(e)
+                }
+            }
+        }
+        return listOf(e)
+    }
+
     fun clear() {
         memory.clear()
         dir.listFiles()?.forEach { it.delete() }

@@ -51,6 +51,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Visibility
@@ -86,6 +88,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -139,14 +142,24 @@ fun FilmregalTheme(content: @Composable () -> Unit) {
     )
 }
 
-fun Context.play(items: List<Item>, index: Int) {
+fun Context.play(items: List<Item>, index: Int, fromStart: Boolean = false) {
     if (items.isEmpty()) return
     startActivity(
         Intent(this, PlayerActivity::class.java)
             .putStringArrayListExtra("paths", ArrayList(items.map { it.path }))
             .putStringArrayListExtra("titles", ArrayList(items.map { it.title }))
+            .putStringArrayListExtra("backdrops", ArrayList(items.map { it.backdrop.orEmpty() }))
+            .putStringArrayListExtra("posters", ArrayList(items.map { it.poster.orEmpty() }))
             .putExtra("index", index.coerceIn(0, items.lastIndex))
+            .putExtra("fromStart", fromStart)
     )
+}
+
+/** Welche Infoseite gerade offen ist (liegt über allem, wie bei Nova). */
+data class DetailTarget(val video: Video, val queue: List<Video>)
+
+object DetailNav {
+    var current: DetailTarget? by mutableStateOf(null)
 }
 
 // ---------------------------------------------------------------- Grundgerüst
@@ -170,6 +183,7 @@ fun App(d: Deps) {
             .onFailure { libError = it.message ?: it.javaClass.simpleName }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Row(Modifier.fillMaxSize()) {
         Sidebar(
             libs = libs,
@@ -190,6 +204,8 @@ fun App(d: Deps) {
                 else -> ContinueScreen(d)
             }
         }
+    }
+    DetailNav.current?.let { t -> key(t.video.path) { DetailScreen(d, t) } }
     }
 }
 
@@ -446,7 +462,7 @@ fun MovieGrid(d: Deps, movies: List<Movie>, onLong: (Movie) -> Unit) {
     val ctx = LocalContext.current
     PosterGrid {
         items(movies, key = { it.path }) { m ->
-            MovieTile(d, m, onClick = { ctx.play(listOf(d.itemFor(m)), 0) }, onLong = { onLong(m) })
+            MovieTile(d, m, onClick = { DetailNav.current = DetailTarget(m, listOf(m)) }, onLong = { onLong(m) })
         }
     }
 }
@@ -542,7 +558,7 @@ fun EpisodeList(d: Deps, s: Show, season: Int, onLong: (Episode) -> Unit) {
                 val (progress, watched) = progressOf(d, e.path)
                 EpisodeRow(
                     e, seasonMeta?.episodes?.get(e.number), progress, watched,
-                    onClick = { ctx.play(eps.map { d.itemFor(it) }, i) },
+                    onClick = { DetailNav.current = DetailTarget(e, eps) },
                     onLong = { onLong(e) },
                 )
             }
@@ -741,6 +757,231 @@ fun AddToPlaylistDialog(d: Deps, label: String, videos: List<Video>, onDone: () 
     )
 }
 
+// ---------------------------------------------------------------- Infoseite
+
+data class DetailInfo(
+    val title: String,
+    val subtitle: String?,
+    val overview: String?,
+    val poster: String?,
+    val backdrop: String?,
+    val still: String? = null,
+)
+
+private fun ratingText(r: Double?) = r?.let { "★ " + "%.1f".format(it) }
+
+fun peekDetail(d: Deps, v: Video): DetailInfo = when (v) {
+    is Movie -> {
+        val m = d.meta.peekMovie(v.title, v.year) ?: Meta(v.title, null, null, v.year)
+        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop)
+    }
+    is Episode -> {
+        val s = d.meta.peekShow(v.show, v.showYear) ?: Meta(v.show, null, null, v.showYear)
+        val season = d.meta.peekSeason(s.id, v.season)
+        episodeInfo(v, s, season)
+    }
+}
+
+suspend fun loadDetail(d: Deps, v: Video): DetailInfo = when (v) {
+    is Movie -> {
+        val m = d.meta.movie(v.title, v.year)
+        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop)
+    }
+    is Episode -> {
+        val s = d.meta.show(v.show, v.showYear)
+        episodeInfo(v, s, d.meta.season(s.id, v.season))
+    }
+}
+
+private fun episodeInfo(v: Episode, s: Meta, season: SeasonMeta?): DetailInfo {
+    val em = season?.episodes?.get(v.number)
+    val name = em?.name?.takeIf { it.isNotBlank() }
+    return DetailInfo(
+        title = s.title,
+        subtitle = listOfNotNull(v.code, name).joinToString("  ·  "),
+        overview = em?.overview ?: s.overview,
+        poster = season?.poster ?: s.poster,
+        backdrop = s.backdrop,
+        still = em?.still,
+    )
+}
+
+@Composable
+fun DetailScreen(d: Deps, target: DetailTarget) {
+    val ctx = LocalContext.current
+    val v = target.video
+    val info by produceState(peekDetail(d, v), v.path) { value = loadDetail(d, v) }
+    val tick = UiRefresh.tick.intValue
+    var changed by remember { mutableIntStateOf(0) }
+    val position = remember(tick, changed) { d.store.position(v.path) }
+    val (progress, watched) = remember(tick, changed) { d.store.progress(v.path) to d.store.isWatched(v.path) }
+    val index = target.queue.indexOfFirst { it.path == v.path }.coerceAtLeast(0)
+    val next = target.queue.getOrNull(index + 1)
+
+    BackHandler { DetailNav.current = null }
+
+    fun start(fromStart: Boolean) {
+        ctx.play(target.queue.map { d.itemFor(it) }, index, fromStart)
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(enabled = false) {}
+    ) {
+        info.backdrop?.let {
+            AsyncImage(
+                model = TMDB_BACKDROP + it,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(Color(0x660B1626), Color(0xF20B1626)))
+            )
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(listOf(Color(0xE60B1626), Color(0x330B1626)))
+            )
+        )
+
+        Row(
+            Modifier
+                .fillMaxSize()
+                .padding(start = 56.dp, end = 56.dp, top = 72.dp, bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(40.dp),
+        ) {
+            Box(
+                Modifier
+                    .width(240.dp)
+                    .aspectRatio(2f / 3f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                val poster = info.poster
+                if (poster != null) {
+                    AsyncImage(
+                        model = TMDB_IMG + poster,
+                        contentDescription = info.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Icon(
+                        if (v is Episode) Icons.Filled.Tv else Icons.Filled.Movie, null,
+                        Modifier.align(Alignment.Center).size(64.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (progress > 0f) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(6.dp),
+                    )
+                }
+            }
+
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                Text(
+                    info.title,
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                )
+                info.subtitle?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Spacer(Modifier.height(28.dp))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (position > 30_000) {
+                        Button(onClick = { start(fromStart = false) }) {
+                            Icon(Icons.Filled.PlayArrow, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Fortsetzen ab ${fmtTime(position)}")
+                        }
+                        OutlinedButton(onClick = { start(fromStart = true) }) {
+                            Icon(Icons.Filled.Replay, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Von Anfang")
+                        }
+                    } else {
+                        Button(onClick = { start(fromStart = true) }) {
+                            Icon(Icons.Filled.PlayArrow, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Abspielen")
+                        }
+                    }
+                    if (next != null) {
+                        OutlinedButton(onClick = { DetailNav.current = DetailTarget(next, target.queue) }) {
+                            Text("Nächste Folge")
+                            Spacer(Modifier.width(8.dp))
+                            Icon(Icons.Filled.SkipNext, null)
+                        }
+                    }
+                }
+
+                val still = info.still
+                if (still != null) {
+                    AsyncImage(
+                        model = TMDB_STILL + still,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .padding(top = 24.dp)
+                            .width(360.dp)
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
+                }
+
+                info.overview?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.padding(top = 24.dp).widthIn(max = 900.dp),
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
+                TextButton(onClick = { d.store.setWatched(v.path, !watched); changed++ }) {
+                    Icon(Icons.Filled.Check, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (watched) "Als ungesehen markieren" else "Als gesehen markieren")
+                }
+                Text(
+                    v.path.substringAfterLast('/'),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text(
+                    v.path.substringBeforeLast('/'),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.4f),
+                )
+            }
+        }
+
+        IconButton(
+            onClick = { DetailNav.current = null },
+            modifier = Modifier.align(Alignment.TopStart).padding(16.dp),
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück", tint = Color.White)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Weiterschauen
 
 @Composable
@@ -763,14 +1004,14 @@ fun ContinueScreen(d: Deps) {
                         Toast.makeText(ctx, "Aus „Weiterschauen“ entfernt", Toast.LENGTH_SHORT).show()
                     }
                     when (val v = classify(item.path)) {
-                        is Movie -> MovieTile(d, v, onClick = { ctx.play(listOf(item), 0) }, onLong = remove)
+                        is Movie -> MovieTile(d, v, onClick = { DetailNav.current = DetailTarget(v, listOf(v)) }, onLong = remove)
                         is Episode -> {
                             val meta by showMetaState(d, v.show, v.showYear)
                             val (progress, watched) = progressOf(d, v.path)
                             PosterTile(
                                 item.title, null, meta.poster?.let { TMDB_IMG + it },
                                 Icons.Filled.Tv, progress, watched,
-                                onClick = { ctx.play(listOf(item), 0) },
+                                onClick = { DetailNav.current = DetailTarget(v, d.libraries.episodesOf(v)) },
                                 onLong = remove,
                             )
                         }

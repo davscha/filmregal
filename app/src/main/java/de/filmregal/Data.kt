@@ -20,7 +20,21 @@ data class NasConfig(
 data class Entry(val name: String, val path: String, val isDir: Boolean)
 
 /** Etwas Abspielbares: Pfad auf dem NAS plus Anzeigename. */
-data class Item(val path: String, val title: String)
+data class Item(
+    val path: String,
+    val title: String,
+    val backdrop: String? = null,
+    val poster: String? = null,
+)
+
+/** 1:23:45 bzw. 4:10 */
+fun fmtTime(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val sec = s % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
 
 data class Playlist(val name: String, val items: List<Item>)
 
@@ -95,6 +109,15 @@ class Store(context: Context) {
     }
 
     fun isWatched(path: String) = p.getBoolean("seen:$path", false)
+
+    fun setWatched(path: String, watched: Boolean) {
+        if (watched) {
+            p.edit().remove("pos:$path").remove("len:$path").putBoolean("seen:$path", true).apply()
+            removeRecent(path)
+        } else {
+            p.edit().remove("seen:$path").apply()
+        }
+    }
 
     fun savePosition(item: Item, pos: Long, len: Long) {
         if (len <= 0) return
@@ -194,11 +217,20 @@ class Deps private constructor(context: Context) {
 
     /** Anzeigename für den Player, z. B. "Vaiana" oder "Sleepy Hollow S01E01 – Der kopflose Reiter". */
     fun itemFor(v: Video): Item = when (v) {
-        is Movie -> Item(v.path, meta.peekMovie(v.title, v.year)?.title ?: v.title)
+        is Movie -> {
+            val m = meta.peekMovie(v.title, v.year)
+            Item(v.path, m?.title ?: v.title, m?.backdrop, m?.poster)
+        }
         is Episode -> {
             val show = meta.peekShow(v.show, v.showYear)
-            val name = show?.let { meta.peekSeason(it.id, v.season)?.episodes?.get(v.number)?.name }
-            Item(v.path, "${show?.title ?: v.show} ${v.code}" + (name?.takeIf { it.isNotBlank() }?.let { " – $it" } ?: ""))
+            val season = show?.let { meta.peekSeason(it.id, v.season) }
+            val name = season?.episodes?.get(v.number)?.name
+            Item(
+                v.path,
+                "${show?.title ?: v.show} ${v.code}" + (name?.takeIf { it.isNotBlank() }?.let { " – $it" } ?: ""),
+                show?.backdrop,
+                season?.poster ?: show?.poster,
+            )
         }
     }
 

@@ -21,6 +21,8 @@ data class Meta(
     val overview: String?,
     val year: String?,
     val id: Int = 0,
+    val backdrop: String? = null,
+    val rating: Double? = null,
 )
 
 data class EpisodeMeta(val name: String, val still: String?, val overview: String?)
@@ -28,6 +30,7 @@ data class SeasonMeta(val poster: String?, val episodes: Map<Int, EpisodeMeta>)
 
 const val TMDB_IMG = "https://image.tmdb.org/t/p/w342"
 const val TMDB_STILL = "https://image.tmdb.org/t/p/w300"
+const val TMDB_BACKDROP = "https://image.tmdb.org/t/p/w1280"
 
 /** Macht aus Dateinamen wie "Toy.Story.5.[2026].German.2160p.AV1.mkv" einen suchbaren Titel. */
 object Titles {
@@ -58,7 +61,7 @@ object Titles {
 
 /** Holt Poster, Beschreibungen und Episodentitel von TMDB und merkt sie sich dauerhaft. */
 class MetaRepo(context: Context, private val settings: Settings) {
-    private val file = File(context.filesDir, "meta2.json")
+    private val file = File(context.filesDir, "meta3.json")
     private val cache: JSONObject = try { JSONObject(file.readText()) } catch (e: Exception) { JSONObject() }
     private val writeLock = Mutex()
 
@@ -135,6 +138,8 @@ class MetaRepo(context: Context, private val settings: Settings) {
                 overview = o.optString("overview").ifEmpty { null },
                 year = o.optString("year").ifEmpty { fallbackYear },
                 id = o.optInt("id"),
+                backdrop = o.optString("backdrop").ifEmpty { null },
+                rating = o.optDouble("rating").takeIf { !it.isNaN() && it > 0 },
             )
         }
 
@@ -164,6 +169,8 @@ class MetaRepo(context: Context, private val settings: Settings) {
             .put("id", r.optInt("id"))
             .put("title", r.str("title").ifEmpty { r.str("name") }.ifEmpty { fallbackTitle })
             .put("poster", r.str("poster_path"))
+            .put("backdrop", r.str("backdrop_path"))
+            .put("rating", r.optDouble("vote_average", 0.0))
             .put("overview", r.str("overview"))
             .put("year", date.take(4))
     }

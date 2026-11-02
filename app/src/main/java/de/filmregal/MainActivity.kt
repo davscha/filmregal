@@ -51,6 +51,8 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -89,6 +91,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -676,6 +679,7 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
     var root by remember { mutableStateOf(saved.root) }
     var user by remember { mutableStateOf(saved.user) }
     var password by remember { mutableStateOf(saved.password) }
+    var showPassword by remember { mutableStateOf(false) }
     var tmdb by remember { mutableStateOf(d.settings.tmdbKey) }
     var status by remember { mutableStateOf<String?>(null) }
 
@@ -718,7 +722,15 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
                 password, { password = it }, Modifier.fillMaxWidth(),
                 label = { Text("Passwort") },
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { showPassword = !showPassword }) {
+                        Icon(
+                            if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            if (showPassword) "Passwort verbergen" else "Passwort anzeigen",
+                        )
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             )
 

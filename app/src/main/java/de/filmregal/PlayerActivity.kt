@@ -170,7 +170,7 @@ class PlayerActivity : ComponentActivity() {
         length = 0
         error = null
         val item = items[i]
-        val media = Media(libVlc, Uri.parse(Nas.url(d.settings.nas, item.path)))
+        val media = Media(libVlc, Uri.parse(StreamServer.url(d.settings.nas, item.path)))
         media.setHWDecoderEnabled(true, false) // AV1 über den Snapdragon-Decoder
         val start = d.store.position(item.path)
         if (start > 30_000) media.addOption(":start-time=${start / 1000}")

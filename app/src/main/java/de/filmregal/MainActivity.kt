@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,7 +49,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
@@ -61,6 +64,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -94,6 +99,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -469,18 +475,21 @@ fun MovieGrid(d: Deps, movies: List<Movie>, onLong: (Movie) -> Unit) {
 
 @Composable
 fun MovieTile(d: Deps, m: Movie, onClick: () -> Unit, onLong: () -> Unit) {
-    val meta by produceState(d.meta.peekMovie(m.title, m.year) ?: Meta(m.title, null, null, m.year), m.path) {
-        value = d.meta.movie(m.title, m.year)
+    val version = MetaVersion.tick.intValue
+    val meta by produceState(d.meta.peekMovie(m) ?: Meta(m.title, null, null, m.year), m.path, version) {
+        value = d.meta.movie(m)
     }
     val (progress, watched) = progressOf(d, m.path)
     PosterTile(meta.title, meta.year, meta.poster?.let { TMDB_IMG + it }, Icons.Filled.Movie, progress, watched, onClick, onLong)
 }
 
 @Composable
-fun showMetaState(d: Deps, name: String, year: String?) =
-    produceState(d.meta.peekShow(name, year) ?: Meta(name, null, null, year), name) {
+fun showMetaState(d: Deps, name: String, year: String?): androidx.compose.runtime.State<Meta> {
+    val version = MetaVersion.tick.intValue
+    return produceState(d.meta.peekShow(name, year) ?: Meta(name, null, null, year), name, version) {
         value = d.meta.show(name, year)
     }
+}
 
 @Composable
 fun ShowGrid(d: Deps, shows: List<Show>, onOpen: (Show) -> Unit, onLong: (Show) -> Unit) {
@@ -766,14 +775,15 @@ data class DetailInfo(
     val poster: String?,
     val backdrop: String?,
     val still: String? = null,
+    val hasInfo: Boolean = true,
 )
 
 private fun ratingText(r: Double?) = r?.let { "★ " + "%.1f".format(it) }
 
 fun peekDetail(d: Deps, v: Video): DetailInfo = when (v) {
     is Movie -> {
-        val m = d.meta.peekMovie(v.title, v.year) ?: Meta(v.title, null, null, v.year)
-        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop)
+        val m = d.meta.peekMovie(v) ?: Meta(v.title, null, null, v.year)
+        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop, hasInfo = m.id != 0)
     }
     is Episode -> {
         val s = d.meta.peekShow(v.show, v.showYear) ?: Meta(v.show, null, null, v.showYear)
@@ -784,8 +794,8 @@ fun peekDetail(d: Deps, v: Video): DetailInfo = when (v) {
 
 suspend fun loadDetail(d: Deps, v: Video): DetailInfo = when (v) {
     is Movie -> {
-        val m = d.meta.movie(v.title, v.year)
-        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop)
+        val m = d.meta.movie(v)
+        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop, hasInfo = m.id != 0)
     }
     is Episode -> {
         val s = d.meta.show(v.show, v.showYear)
@@ -800,9 +810,10 @@ private fun episodeInfo(v: Episode, s: Meta, season: SeasonMeta?): DetailInfo {
         title = s.title,
         subtitle = listOfNotNull(v.code, name).joinToString("  ·  "),
         overview = em?.overview ?: s.overview,
-        poster = season?.poster ?: s.poster,
+        poster = if (s.customPoster) s.poster else season?.poster ?: s.poster,
         backdrop = s.backdrop,
         still = em?.still,
+        hasInfo = s.id != 0,
     )
 }
 
@@ -810,7 +821,10 @@ private fun episodeInfo(v: Episode, s: Meta, season: SeasonMeta?): DetailInfo {
 fun DetailScreen(d: Deps, target: DetailTarget) {
     val ctx = LocalContext.current
     val v = target.video
-    val info by produceState(peekDetail(d, v), v.path) { value = loadDetail(d, v) }
+    val version = MetaVersion.tick.intValue
+    val info by produceState(peekDetail(d, v), v.path, version) { value = loadDetail(d, v) }
+    var editor by remember { mutableStateOf<String?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
     val tick = UiRefresh.tick.intValue
     var changed by remember { mutableIntStateOf(0) }
     val position = remember(tick, changed) { d.store.position(v.path) }
@@ -818,7 +832,7 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
     val index = target.queue.indexOfFirst { it.path == v.path }.coerceAtLeast(0)
     val next = target.queue.getOrNull(index + 1)
 
-    BackHandler { DetailNav.current = null }
+    BackHandler(enabled = editor == null) { DetailNav.current = null }
 
     fun start(fromStart: Boolean) {
         ctx.play(target.queue.map { d.itemFor(it) }, index, fromStart)
@@ -930,6 +944,14 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
                     }
                 }
 
+                if (!info.hasInfo) {
+                    FilledTonalButton(onClick = { editor = "search" }, modifier = Modifier.padding(top = 16.dp)) {
+                        Icon(Icons.Filled.Search, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Info suchen")
+                    }
+                }
+
                 val still = info.still
                 if (still != null) {
                     AsyncImage(
@@ -978,6 +1000,240 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
             modifier = Modifier.align(Alignment.TopStart).padding(16.dp),
         ) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück", tint = Color.White)
+        }
+
+        Box(Modifier.align(Alignment.TopEnd).padding(16.dp)) {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(Icons.Filled.MoreVert, "Mehr", tint = Color.White)
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                val what = if (v is Episode) "Serie" else "Film"
+                DropdownMenuItem(text = { Text("Info suchen / $what zuordnen …") }, onClick = { menuOpen = false; editor = "search" })
+                if (info.hasInfo) {
+                    DropdownMenuItem(text = { Text("Anderes Poster auswählen …") }, onClick = { menuOpen = false; editor = "poster" })
+                    DropdownMenuItem(text = { Text("Anderes Hintergrundbild …") }, onClick = { menuOpen = false; editor = "backdrop" })
+                    DropdownMenuItem(text = { Text("Info entfernen") }, onClick = { menuOpen = false; d.meta.removeInfo(v) })
+                }
+                if (d.meta.hasOverride(v)) {
+                    DropdownMenuItem(text = { Text("Automatische Erkennung wiederherstellen") }, onClick = { menuOpen = false; d.meta.resetOverride(v) })
+                }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text(if (watched) "Als ungesehen markieren" else "Als gesehen markieren") },
+                    onClick = { menuOpen = false; d.store.setWatched(v.path, !watched); changed++ },
+                )
+            }
+        }
+
+        when (editor) {
+            "search" -> MetaSearchScreen(d, v) { editor = null }
+            "poster", "backdrop" -> ImagePickerScreen(d, v, editor!!) { editor = null }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Editor
+
+private fun kindOf(v: Video) = if (v is Episode) "tv" else "movie"
+
+private suspend fun currentMeta(d: Deps, v: Video): Meta = when (v) {
+    is Movie -> d.meta.movie(v)
+    is Episode -> d.meta.show(v.show, v.showYear)
+}
+
+@Composable
+fun EditorFrame(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+    BackHandler { onClose() }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .clickable(enabled = false) {}
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück") }
+            Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 8.dp))
+        }
+        content()
+    }
+}
+
+@Composable
+fun MetaSearchScreen(d: Deps, v: Video, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val kind = kindOf(v)
+    var query by remember {
+        mutableStateOf(
+            when (v) {
+                is Movie -> d.meta.peekMovie(v)?.takeIf { it.id != 0 }?.title ?: v.title
+                is Episode -> v.show
+            }
+        )
+    }
+    var year by remember {
+        mutableStateOf(
+            when (v) {
+                is Movie -> v.year.orEmpty()
+                is Episode -> v.showYear.orEmpty()
+            }
+        )
+    }
+    var results by remember { mutableStateOf<List<Candidate>?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    fun search() {
+        loading = true
+        error = null
+        scope.launch {
+            attempt { d.meta.search(kind, query.trim(), year.trim()) }
+                .onSuccess { results = it }
+                .onFailure { error = it.message ?: it.javaClass.simpleName }
+            loading = false
+        }
+    }
+    LaunchedEffect(Unit) { search() }
+
+    EditorFrame(if (kind == "tv") "Serie zuordnen" else "Film zuordnen", onClose) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Titel") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { search() }),
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = year,
+                onValueChange = { year = it.filter(Char::isDigit).take(4) },
+                label = { Text("Jahr") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { search() }),
+                modifier = Modifier.width(110.dp),
+            )
+            Button(onClick = { search() }) { Text("Suchen") }
+        }
+        Text(
+            "Datei: " + v.path.substringAfterLast('/'),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        val list = results
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            error != null -> CenterMessage("Suche fehlgeschlagen: $error")
+            list == null -> {}
+            list.isEmpty() -> CenterMessage("Nichts gefunden.\nProbier einen kürzeren Titel oder lass das Jahr weg.")
+            else -> LazyColumn(
+                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(list) { c ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .clickable {
+                                d.meta.assign(v, c)
+                                onClose()
+                            }
+                            .padding(10.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .width(80.dp)
+                                .aspectRatio(2f / 3f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            c.poster?.let {
+                                AsyncImage(
+                                    model = TMDB_IMG + it,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                        }
+                        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                            Text(c.title, style = MaterialTheme.typography.titleMedium)
+                            c.year?.let {
+                                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                            }
+                            c.overview?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ImagePickerScreen(d: Deps, v: Video, which: String, onClose: () -> Unit) {
+    val poster = which == "poster"
+    var meta by remember { mutableStateOf<Meta?>(null) }
+    var images by remember { mutableStateOf<List<String>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        attempt {
+            val m = currentMeta(d, v)
+            meta = m
+            d.meta.images(kindOf(v), m.id, if (poster) "posters" else "backdrops")
+        }.onSuccess { images = it }.onFailure { error = it.message ?: it.javaClass.simpleName }
+    }
+
+    EditorFrame(if (poster) "Poster auswählen" else "Hintergrundbild auswählen", onClose) {
+        val list = images
+        when {
+            error != null -> CenterMessage("Bilder konnten nicht geladen werden: $error")
+            list == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            list.isEmpty() -> CenterMessage("Keine Bilder gefunden.")
+            else -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(if (poster) 150.dp else 320.dp),
+                contentPadding = PaddingValues(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(list) { path ->
+                    AsyncImage(
+                        model = (if (poster) TMDB_IMG else TMDB_STILL) + path,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(if (poster) 2f / 3f else 16f / 9f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable {
+                                meta?.let { d.meta.setImage(v, it, which, path) }
+                                onClose()
+                            },
+                    )
+                }
+            }
         }
     }
 }

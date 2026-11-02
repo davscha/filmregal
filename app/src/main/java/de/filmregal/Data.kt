@@ -218,7 +218,7 @@ class Deps private constructor(context: Context) {
     /** Anzeigename für den Player, z. B. "Vaiana" oder "Sleepy Hollow S01E01 – Der kopflose Reiter". */
     fun itemFor(v: Video): Item = when (v) {
         is Movie -> {
-            val m = meta.peekMovie(v.title, v.year)
+            val m = meta.peekMovie(v)
             Item(v.path, m?.title ?: v.title, m?.backdrop, m?.poster)
         }
         is Episode -> {
@@ -229,7 +229,7 @@ class Deps private constructor(context: Context) {
                 v.path,
                 "${show?.title ?: v.show} ${v.code}" + (name?.takeIf { it.isNotBlank() }?.let { " – $it" } ?: ""),
                 show?.backdrop,
-                season?.poster ?: show?.poster,
+                if (show?.customPoster == true) show.poster else season?.poster ?: show?.poster,
             )
         }
     }

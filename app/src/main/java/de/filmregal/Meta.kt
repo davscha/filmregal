@@ -23,7 +23,15 @@ data class Meta(
     val id: Int = 0,
     val backdrop: String? = null,
     val rating: Double? = null,
+    /** Poster wurde von Hand gewählt → hat Vorrang vor Staffelpostern. */
+    val customPoster: Boolean = false,
 )
+
+/** Ein Suchtreffer im Editor. */
+data class Candidate(val title: String, val year: String?, val poster: String?, val overview: String?, val json: JSONObject)
+
+/** Wird erhöht, wenn im Editor etwas geändert wurde → Kacheln und Infoseiten laden neu. */
+object MetaVersion { val tick = androidx.compose.runtime.mutableIntStateOf(0) }
 
 data class EpisodeMeta(val name: String, val still: String?, val overview: String?)
 data class SeasonMeta(val poster: String?, val episodes: Map<Int, EpisodeMeta>)
@@ -65,6 +73,100 @@ class MetaRepo(context: Context, private val settings: Settings) {
     private val cache: JSONObject = try { JSONObject(file.readText()) } catch (e: Exception) { JSONObject() }
     private val writeLock = Mutex()
 
+    /** Von Hand gesetzte Zuordnungen – bleiben auch bei "Alles neu laden" erhalten. */
+    private val overrideFile = File(context.filesDir, "overrides.json")
+    private val overrides: JSONObject = try { JSONObject(overrideFile.readText()) } catch (e: Exception) { JSONObject() }
+
+    fun overrideKey(v: Video) = when (v) {
+        is Movie -> "m|${v.path}"
+        is Episode -> "t|${v.show.lowercase()}"
+    }
+
+    private fun override(k: String): JSONObject? = synchronized(overrides) { overrides.optJSONObject(k) }
+
+    fun hasOverride(v: Video) = override(overrideKey(v)) != null
+
+    private fun saveOverride(k: String, o: JSONObject?) {
+        synchronized(overrides) {
+            if (o == null) overrides.remove(k) else overrides.put(k, o)
+            overrideFile.writeText(overrides.toString())
+        }
+        MetaVersion.tick.intValue++
+    }
+
+    /** Treffer aus der Suche übernehmen. */
+    fun assign(v: Video, c: Candidate) = saveOverride(overrideKey(v), JSONObject(c.json.toString()))
+
+    /** Keine Infos anzeigen, nur den Dateinamen. */
+    fun removeInfo(v: Video) = saveOverride(overrideKey(v), JSONObject().put("none", true))
+
+    /** Zurück zur automatischen Erkennung. */
+    fun resetOverride(v: Video) = saveOverride(overrideKey(v), null)
+
+    /** Anderes Poster oder Hintergrundbild wählen ([kind] = "poster" oder "backdrop"). */
+    fun setImage(v: Video, current: Meta, kind: String, path: String) {
+        val k = overrideKey(v)
+        val base = override(k)?.let { JSONObject(it.toString()) } ?: metaJson(current)
+        base.put(kind, path)
+        if (kind == "poster") base.put("custom", true)
+        saveOverride(k, base)
+    }
+
+    private fun metaJson(m: Meta) = JSONObject()
+        .put("id", m.id)
+        .put("title", m.title)
+        .put("poster", m.poster.orEmpty())
+        .put("backdrop", m.backdrop.orEmpty())
+        .put("overview", m.overview.orEmpty())
+        .put("year", m.year.orEmpty())
+        .put("rating", m.rating ?: 0.0)
+
+    private fun overrideMeta(k: String, fallbackTitle: String, fallbackYear: String?): Meta? {
+        val o = override(k) ?: return null
+        if (o.optBoolean("none")) return Meta(fallbackTitle, null, null, fallbackYear)
+        return toMeta(o, fallbackTitle, fallbackYear)
+    }
+
+    fun peekMovie(m: Movie): Meta? =
+        overrideMeta("m|${m.path}", m.title, m.year) ?: peekMovie(m.title, m.year)
+
+    suspend fun movie(m: Movie): Meta =
+        overrideMeta("m|${m.path}", m.title, m.year) ?: movie(m.title, m.year)
+
+    suspend fun search(kind: String, query: String, year: String?): List<Candidate> {
+        val apiKey = settings.tmdbKey
+        if (apiKey.isBlank() || query.isBlank()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            val path = if (kind == "tv") "search/tv" else "search/movie"
+            val yearParam = if (kind == "tv") "first_air_date_year" else "year"
+            var list = if (!year.isNullOrBlank()) {
+                results(get(apiKey, path, mapOf("query" to query, yearParam to year)))
+            } else emptyList()
+            if (list.isEmpty()) list = results(get(apiKey, path, mapOf("query" to query)))
+            list.take(25).map { r ->
+                val c = compact(r, query)
+                Candidate(
+                    c.optString("title"),
+                    c.optString("year").ifEmpty { null },
+                    c.optString("poster").ifEmpty { null },
+                    c.optString("overview").ifEmpty { null },
+                    c,
+                )
+            }
+        }
+    }
+
+    /** Alle Poster bzw. Hintergrundbilder eines Films oder einer Serie. */
+    suspend fun images(kind: String, id: Int, which: String): List<String> {
+        val apiKey = settings.tmdbKey
+        if (apiKey.isBlank() || id == 0) return emptyList()
+        return withContext(Dispatchers.IO) {
+            val o = get(apiKey, "$kind/$id/images", mapOf("include_image_language" to "de,en,null"))
+            val a = o.optJSONArray(which) ?: JSONArray()
+            (0 until a.length()).mapNotNull { a.getJSONObject(it).optString("file_path").ifEmpty { null } }
+        }
+    }
+
     private fun cached(k: String): JSONObject? = synchronized(cache) { cache.optJSONObject(k) }
 
     /** Holt aus dem Cache oder per [block] aus dem Netz. Netzwerkfehler werden nicht gecacht. */
@@ -100,10 +202,12 @@ class MetaRepo(context: Context, private val settings: Settings) {
     private fun showKey(name: String, year: String?) = "t|${name.lowercase()}|${year.orEmpty()}"
 
     fun peekShow(name: String, year: String?): Meta? =
-        cached(showKey(name, year))?.let { toMeta(it, name, year) }
+        overrideMeta("t|${name.lowercase()}", name, year)
+            ?: cached(showKey(name, year))?.let { toMeta(it, name, year) }
 
     suspend fun show(name: String, year: String?): Meta =
-        fetch(showKey(name, year)) { key -> searchShow(key, name, year) }?.let { toMeta(it, name, year) }
+        overrideMeta("t|${name.lowercase()}", name, year)
+            ?: fetch(showKey(name, year)) { key -> searchShow(key, name, year) }?.let { toMeta(it, name, year) }
             ?: Meta(name, null, null, year)
 
     fun peekSeason(showId: Int, season: Int): SeasonMeta? =
@@ -140,6 +244,7 @@ class MetaRepo(context: Context, private val settings: Settings) {
                 id = o.optInt("id"),
                 backdrop = o.optString("backdrop").ifEmpty { null },
                 rating = o.optDouble("rating").takeIf { !it.isNaN() && it > 0 },
+                customPoster = o.optBoolean("custom"),
             )
         }
 

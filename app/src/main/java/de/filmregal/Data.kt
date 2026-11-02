@@ -186,12 +186,21 @@ class Deps private constructor(context: Context) {
     val settings = Settings(context)
     val store = Store(context)
     val meta = MetaRepo(context, settings)
+    val libraries = LibraryStore(context)
 
     init {
         Nas.working = settings.smbVariant.coerceIn(0, 3)
     }
 
-    fun itemFor(e: Entry) = Item(e.path, meta.peek(e)?.title ?: Titles.clean(e.name, e.isDir).first)
+    /** Anzeigename für den Player, z. B. "Vaiana" oder "Sleepy Hollow S01E01 – Der kopflose Reiter". */
+    fun itemFor(v: Video): Item = when (v) {
+        is Movie -> Item(v.path, meta.peekMovie(v.title, v.year)?.title ?: v.title)
+        is Episode -> {
+            val show = meta.peekShow(v.show, v.showYear)
+            val name = show?.let { meta.peekSeason(it.id, v.season)?.episodes?.get(v.number)?.name }
+            Item(v.path, "${show?.title ?: v.show} ${v.code}" + (name?.takeIf { it.isNotBlank() }?.let { " – $it" } ?: ""))
+        }
+    }
 
     companion object {
         @Volatile private var instance: Deps? = null

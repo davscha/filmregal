@@ -64,9 +64,15 @@ object Nas {
     @Volatile var working = 0
     val workingLabel get() = variants[working].label
 
-    private fun context(cfg: NasConfig, i: Int): CIFSContext =
-        if (cfg.user.isBlank()) bases[i].withGuestCrendentials()
-        else bases[i].withCredentials(NtlmPasswordAuthenticator("", cfg.user, cfg.password))
+    /** Angemeldeter Kontext wird wiederverwendet, damit nicht jeder Ordner neu anmeldet. */
+    private val contexts = HashMap<Pair<NasConfig, Int>, CIFSContext>()
+
+    private fun context(cfg: NasConfig, i: Int): CIFSContext = synchronized(contexts) {
+        contexts.getOrPut(cfg to i) {
+            if (cfg.user.isBlank()) bases[i].withGuestCrendentials()
+            else bases[i].withCredentials(NtlmPasswordAuthenticator("", cfg.user, cfg.password))
+        }
+    }
 
     /** Führt [block] mit dem zuletzt funktionierenden Verfahren aus, bei Anmeldefehlern mit den anderen. */
     private fun <T> withAuth(cfg: NasConfig, block: (CIFSContext) -> T): T {

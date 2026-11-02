@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -100,9 +102,6 @@ import kotlinx.coroutines.launch
 
 /** Wird bei jeder Rückkehr zur App erhöht, damit Fortschrittsbalken aktuell sind. */
 object UiRefresh { val tick = mutableIntStateOf(0) }
-
-/** Merkt sich geladene Ordner, damit "Zurück" sofort geht. */
-object ListCache { val map = HashMap<String, List<Entry>>() }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -164,7 +163,10 @@ fun App(d: Deps) {
         if (!nas.isComplete) return@LaunchedEffect
         libError = null
         attempt { Nas.list(nas, nas.root).filter { it.isDir } }
-            .onSuccess { libs = it; d.settings.smbVariant = Nas.working }
+            .onSuccess {
+                libs = it
+                d.settings.smbVariant = Nas.working
+            }
             .onFailure { libError = it.message ?: it.javaClass.simpleName }
     }
 
@@ -174,15 +176,14 @@ fun App(d: Deps) {
             error = libError,
             screen = screen,
             onSelect = { screen = it },
-            onReload = { ListCache.map.clear(); reload++ },
+            onReload = { reload++ },
         )
         Box(Modifier.weight(1f).fillMaxHeight()) {
             when {
-                screen.startsWith("lib:") -> key(screen) { Browser(d, nas, screen.removePrefix("lib:")) }
+                screen.startsWith("lib:") -> key(screen) { LibraryScreen(d, nas, screen.removePrefix("lib:")) }
                 screen == "playlists" -> PlaylistsScreen(d)
                 screen == "settings" -> SettingsScreen(d) {
                     nas = d.settings.nas
-                    ListCache.map.clear()
                     reload++
                     screen = "continue"
                 }
@@ -295,97 +296,342 @@ fun CenterMessage(text: String, action: (@Composable () -> Unit)? = null) {
     }
 }
 
-// ---------------------------------------------------------------- Ordner durchblättern
+// ---------------------------------------------------------------- Bibliothek: Filme | Serien
 
 @Composable
-fun Browser(d: Deps, nas: NasConfig, libPath: String) {
-    val ctx = LocalContext.current
-    var path by rememberSaveable { mutableStateOf(libPath) }
-    var entries by remember(path) { mutableStateOf(ListCache.map[path]) }
-    var error by remember(path) { mutableStateOf<String?>(null) }
-    var retry by remember { mutableIntStateOf(0) }
-    var addTarget by remember { mutableStateOf<Entry?>(null) }
+fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
+    var data by remember { mutableStateOf(d.libraries.load(root)) }
+    var scanTick by remember { mutableIntStateOf(0) }
+    var scanning by remember { mutableStateOf(false) }
+    var scanInfo by remember { mutableStateOf<String?>(null) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+    var mode by rememberSaveable { mutableStateOf("") }
+    var openShow by rememberSaveable { mutableStateOf<String?>(null) }
+    var openSeason by rememberSaveable { mutableStateOf<Int?>(null) }
+    var addTarget by remember { mutableStateOf<Pair<String, List<Video>>?>(null) }
 
-    fun goUp() { path = path.substringBeforeLast('/', libPath) }
-    BackHandler(enabled = path != libPath) { goUp() }
-
-    LaunchedEffect(path, retry) {
-        attempt { Nas.list(nas, path) }
-            .onSuccess { entries = it; ListCache.map[path] = it; error = null }
-            .onFailure { if (entries == null) error = it.message ?: it.javaClass.simpleName }
+    // Beim ersten Öffnen oder wenn der letzte Scan älter als 6 Stunden ist: im Hintergrund neu durchsuchen
+    LaunchedEffect(scanTick) {
+        val current = data
+        val stale = current == null || System.currentTimeMillis() - current.scannedAt > 6 * 3_600_000L
+        if (scanTick == 0 && !stale) return@LaunchedEffect
+        scanning = true
+        scanError = null
+        scanInfo = null
+        attempt { d.libraries.scan(nas, root) { f, v -> scanInfo = "$f Ordner durchsucht, $v Videos gefunden" } }
+            .onSuccess { data = it }
+            .onFailure { scanError = it.message ?: it.javaClass.simpleName }
+        scanning = false
     }
 
-    val list = entries
-    val videos = list.orEmpty().filter { !it.isDir }
+    BackHandler(enabled = openShow != null) {
+        if (openSeason != null) openSeason = null else openShow = null
+    }
+
+    val lib = data
+    val effectiveMode = mode.ifEmpty {
+        if (lib != null && lib.movies.isEmpty() && lib.shows.isNotEmpty()) "serien" else "filme"
+    }
+    val show = lib?.shows?.firstOrNull { it.name == openShow }
+    val season = openSeason
 
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (path != libPath) {
-                IconButton(onClick = { goUp() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück") }
+            if (show != null) {
+                IconButton(onClick = { if (openSeason != null) openSeason = null else openShow = null }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück")
+                }
             }
-            val crumbs = path.removePrefix(nas.root).trim('/').split('/')
-                .joinToString("  ›  ") { it.replaceFirstChar { c -> c.uppercase() } }
+            val title = when {
+                show != null && season != null -> "${show.name}  ›  Staffel $season"
+                show != null -> show.name
+                else -> root.substringAfterLast('/').replaceFirstChar { it.uppercase() }
+            }
             Text(
-                crumbs,
+                title,
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (videos.isNotEmpty()) {
-                FilledTonalButton(onClick = { ctx.play(videos.map { d.itemFor(it) }, 0) }) {
-                    Icon(Icons.Filled.PlayArrow, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Alle abspielen")
-                }
+            if (show == null && lib != null) {
+                ModeButton("Filme (${lib.movies.size})", effectiveMode == "filme") { mode = "filme" }
+                Spacer(Modifier.width(8.dp))
+                ModeButton("Serien (${lib.shows.size})", effectiveMode == "serien") { mode = "serien" }
+                Spacer(Modifier.width(8.dp))
+            }
+            IconButton(onClick = { scanTick++ }, enabled = !scanning) {
+                Icon(Icons.Filled.Refresh, "Neu durchsuchen")
             }
         }
+        if (scanning) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                scanInfo ?: "Durchsuche Bibliothek …",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+        }
+        scanError?.let {
+            Text(
+                "Durchsuchen fehlgeschlagen: $it",
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+        }
+
         when {
-            error != null -> CenterMessage("Ordner konnte nicht geladen werden:\n$error") {
-                Button(onClick = { error = null; retry++ }) { Text("Nochmal versuchen") }
+            lib == null && scanning -> CenterMessage(
+                "Die Bibliothek wird zum ersten Mal durchsucht.\nBei vielen Ordnern kann das eine Minute dauern."
+            )
+            lib == null -> CenterMessage("Noch nicht durchsucht.") {
+                Button(onClick = { scanTick++ }) { Text("Jetzt durchsuchen") }
             }
-            list == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            list.isEmpty() -> CenterMessage("Hier liegen keine Videos.")
-            else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(150.dp),
-                contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp),
-            ) {
-                items(list, key = { it.path }) { e ->
-                    Tile(
-                        d, e,
-                        onClick = {
-                            if (e.isDir) path = e.path
-                            else ctx.play(videos.map { d.itemFor(it) }, videos.indexOf(e))
-                        },
-                        onLongClick = { addTarget = e },
+            show != null && season != null -> EpisodeList(d, show, season) { e ->
+                addTarget = "Folge ${e.code}" to listOf(e)
+            }
+            show != null -> SeasonGrid(
+                d, show,
+                onOpen = { openSeason = it },
+                onLong = { n -> addTarget = "Staffel $n" to show.seasons[n].orEmpty() },
+            )
+            effectiveMode == "serien" ->
+                if (lib.shows.isEmpty()) {
+                    CenterMessage("Keine Serien gefunden.\nFolgen werden an S01E01 im Dateinamen erkannt.")
+                } else {
+                    ShowGrid(
+                        d, lib.shows,
+                        onOpen = { openShow = it.name; openSeason = null },
+                        onLong = { s -> addTarget = "Ganze Serie „${s.name}“" to s.episodes },
                     )
                 }
-            }
+            else ->
+                if (lib.movies.isEmpty()) CenterMessage("Keine Filme gefunden.")
+                else MovieGrid(d, lib.movies) { m -> addTarget = "Film" to listOf(m) }
         }
     }
 
-    addTarget?.let { t -> AddToPlaylistDialog(d, nas, t) { addTarget = null } }
+    addTarget?.let { (label, videos) -> AddToPlaylistDialog(d, label, videos) { addTarget = null } }
+}
+
+@Composable
+fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) Button(onClick = onClick) { Text(label) }
+    else OutlinedButton(onClick = onClick) { Text(label) }
+}
+
+@Composable
+fun PosterGrid(content: LazyGridScope.() -> Unit) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(150.dp),
+        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
+        content = content,
+    )
+}
+
+@Composable
+fun progressOf(d: Deps, path: String): Pair<Float, Boolean> {
+    val tick = UiRefresh.tick.intValue
+    return remember(tick, path) { d.store.progress(path) to d.store.isWatched(path) }
+}
+
+@Composable
+fun MovieGrid(d: Deps, movies: List<Movie>, onLong: (Movie) -> Unit) {
+    val ctx = LocalContext.current
+    PosterGrid {
+        items(movies, key = { it.path }) { m ->
+            MovieTile(d, m, onClick = { ctx.play(listOf(d.itemFor(m)), 0) }, onLong = { onLong(m) })
+        }
+    }
+}
+
+@Composable
+fun MovieTile(d: Deps, m: Movie, onClick: () -> Unit, onLong: () -> Unit) {
+    val meta by produceState(d.meta.peekMovie(m.title, m.year) ?: Meta(m.title, null, null, m.year), m.path) {
+        value = d.meta.movie(m.title, m.year)
+    }
+    val (progress, watched) = progressOf(d, m.path)
+    PosterTile(meta.title, meta.year, meta.poster?.let { TMDB_IMG + it }, Icons.Filled.Movie, progress, watched, onClick, onLong)
+}
+
+@Composable
+fun showMetaState(d: Deps, name: String, year: String?) =
+    produceState(d.meta.peekShow(name, year) ?: Meta(name, null, null, year), name) {
+        value = d.meta.show(name, year)
+    }
+
+@Composable
+fun ShowGrid(d: Deps, shows: List<Show>, onOpen: (Show) -> Unit, onLong: (Show) -> Unit) {
+    PosterGrid {
+        items(shows, key = { it.name }) { s ->
+            val meta by showMetaState(d, s.name, s.year)
+            val n = s.seasons.size
+            PosterTile(
+                meta.title,
+                "$n ${if (n == 1) "Staffel" else "Staffeln"} · ${s.episodes.size} Folgen",
+                meta.poster?.let { TMDB_IMG + it },
+                Icons.Filled.Tv, 0f, false,
+                onClick = { onOpen(s) },
+                onLong = { onLong(s) },
+            )
+        }
+    }
+}
+
+@Composable
+fun SeasonGrid(d: Deps, s: Show, onOpen: (Int) -> Unit, onLong: (Int) -> Unit) {
+    val showMeta by showMetaState(d, s.name, s.year)
+    val tick = UiRefresh.tick.intValue
+    Column(Modifier.fillMaxSize()) {
+        showMeta.overview?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp).widthIn(max = 900.dp),
+            )
+        }
+        PosterGrid {
+            items(s.seasons.entries.toList(), key = { it.key }) { (n, eps) ->
+                val seasonMeta by produceState(d.meta.peekSeason(showMeta.id, n), showMeta.id, n) {
+                    value = d.meta.season(showMeta.id, n)
+                }
+                val watched = remember(tick, eps) { eps.all { d.store.isWatched(it.path) } }
+                PosterTile(
+                    "Staffel $n",
+                    "${eps.size} ${if (eps.size == 1) "Folge" else "Folgen"}",
+                    (seasonMeta?.poster ?: showMeta.poster)?.let { TMDB_IMG + it },
+                    Icons.Filled.Tv, 0f, watched,
+                    onClick = { onOpen(n) },
+                    onLong = { onLong(n) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EpisodeList(d: Deps, s: Show, season: Int, onLong: (Episode) -> Unit) {
+    val ctx = LocalContext.current
+    val eps = s.seasons[season].orEmpty()
+    val showMeta by showMetaState(d, s.name, s.year)
+    val seasonMeta by produceState(d.meta.peekSeason(showMeta.id, season), showMeta.id, season) {
+        value = d.meta.season(showMeta.id, season)
+    }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(horizontal = 24.dp, vertical = 4.dp)) {
+            FilledTonalButton(onClick = { ctx.play(eps.map { d.itemFor(it) }, 0) }) {
+                Icon(Icons.Filled.PlayArrow, null)
+                Spacer(Modifier.width(6.dp))
+                Text("Staffel abspielen")
+            }
+        }
+        LazyColumn(
+            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            itemsIndexed(eps, key = { _, e -> e.path }) { i, e ->
+                val (progress, watched) = progressOf(d, e.path)
+                EpisodeRow(
+                    e, seasonMeta?.episodes?.get(e.number), progress, watched,
+                    onClick = { ctx.play(eps.map { d.itemFor(it) }, i) },
+                    onLong = { onLong(e) },
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Tile(d: Deps, e: Entry, onClick: () -> Unit, onLongClick: () -> Unit) {
-    val meta by produceState(initialValue = d.meta.peek(e) ?: d.meta.fallback(e), e.path) {
-        value = d.meta.lookup(e)
+fun EpisodeRow(
+    e: Episode,
+    em: EpisodeMeta?,
+    progress: Float,
+    watched: Boolean,
+    onClick: () -> Unit,
+    onLong: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onClick, onLongClick = onLong)
+            .padding(10.dp),
+    ) {
+        Box(
+            Modifier
+                .width(200.dp)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            val still = em?.still
+            if (still != null) {
+                AsyncImage(
+                    model = TMDB_STILL + still,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.PlayArrow, null,
+                    Modifier.align(Alignment.Center).size(40.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            if (watched) Badge(Icons.Filled.Check, Modifier.align(Alignment.TopEnd))
+            if (progress > 0f) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp),
+                )
+            }
+        }
+        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            val name = em?.name?.takeIf { it.isNotBlank() } ?: "Folge ${e.number}"
+            Text("${e.number} – $name", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(e.code, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            em?.overview?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
     }
-    val tick = UiRefresh.tick.intValue
-    val progress = remember(tick, e.path) { if (e.isDir) 0f else d.store.progress(e.path) }
-    val watched = remember(tick, e.path) { !e.isDir && d.store.isWatched(e.path) }
+}
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun PosterTile(
+    title: String,
+    subtitle: String?,
+    posterUrl: String?,
+    placeholder: ImageVector,
+    progress: Float,
+    watched: Boolean,
+    onClick: () -> Unit,
+    onLong: () -> Unit,
+) {
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLong)
     ) {
         Box(
             Modifier
@@ -394,11 +640,10 @@ fun Tile(d: Deps, e: Entry, onClick: () -> Unit, onLongClick: () -> Unit) {
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            val poster = meta.poster
-            if (poster != null) {
+            if (posterUrl != null) {
                 AsyncImage(
-                    model = TMDB_IMG + poster,
-                    contentDescription = meta.title,
+                    model = posterUrl,
+                    contentDescription = title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -408,22 +653,12 @@ fun Tile(d: Deps, e: Entry, onClick: () -> Unit, onLongClick: () -> Unit) {
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(
-                        if (e.isDir) Icons.Filled.Folder else Icons.Filled.Movie,
-                        null,
-                        Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
+                    Icon(placeholder, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(8.dp))
-                    Text(meta.title, textAlign = TextAlign.Center, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    Text(title, textAlign = TextAlign.Center, maxLines = 4, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (e.isDir && poster != null) {
-                Badge(Icons.Filled.Folder, Modifier.align(Alignment.TopStart))
-            }
-            if (watched) {
-                Badge(Icons.Filled.Check, Modifier.align(Alignment.TopEnd))
-            }
+            if (watched) Badge(Icons.Filled.Check, Modifier.align(Alignment.TopEnd))
             if (progress > 0f) {
                 LinearProgressIndicator(
                     progress = { progress },
@@ -432,14 +667,14 @@ fun Tile(d: Deps, e: Entry, onClick: () -> Unit, onLongClick: () -> Unit) {
             }
         }
         Text(
-            meta.title,
+            title,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 4.dp, end = 4.dp),
         )
-        meta.year?.let {
+        subtitle?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.bodySmall,
@@ -466,40 +701,28 @@ fun Badge(icon: ImageVector, modifier: Modifier) {
 }
 
 @Composable
-fun AddToPlaylistDialog(d: Deps, nas: NasConfig, target: Entry, onDone: () -> Unit) {
+fun AddToPlaylistDialog(d: Deps, label: String, videos: List<Video>, onDone: () -> Unit) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val lists = remember { d.store.playlists() }
     var newName by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
 
     fun add(name: String) {
-        if (busy || name.isBlank()) return
-        busy = true
-        scope.launch {
-            val items = if (target.isDir) {
-                attempt { Nas.list(nas, target.path) }.getOrDefault(emptyList())
-                    .filter { !it.isDir }.map { d.itemFor(it) }
-            } else {
-                listOf(d.itemFor(target))
-            }
-            d.store.addToPlaylist(name, items)
-            Toast.makeText(ctx, "${items.size} Titel zu „$name“ hinzugefügt", Toast.LENGTH_SHORT).show()
-            onDone()
-        }
+        if (name.isBlank()) return
+        val items = videos.map { d.itemFor(it) }
+        d.store.addToPlaylist(name, items)
+        Toast.makeText(ctx, "${items.size} Titel zu „$name“ hinzugefügt", Toast.LENGTH_SHORT).show()
+        onDone()
     }
 
     AlertDialog(
         onDismissRequest = onDone,
-        title = { Text(if (target.isDir) "Ganzen Ordner zur Wiedergabeliste" else "Zur Wiedergabeliste") },
+        title = { Text("$label zur Wiedergabeliste") },
         text = {
             Column {
                 if (lists.isNotEmpty()) {
                     Text("Bestehende Liste wählen:", style = MaterialTheme.typography.labelLarge)
                     lists.forEach { pl ->
-                        TextButton(onClick = { add(pl.name) }, enabled = !busy) {
-                            Text("${pl.name}  (${pl.items.size})")
-                        }
+                        TextButton(onClick = { add(pl.name) }) { Text("${pl.name}  (${pl.items.size})") }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
@@ -512,9 +735,7 @@ fun AddToPlaylistDialog(d: Deps, nas: NasConfig, target: Entry, onDone: () -> Un
             }
         },
         confirmButton = {
-            TextButton(onClick = { add(newName.trim()) }, enabled = newName.isNotBlank() && !busy) {
-                Text("Neue Liste anlegen")
-            }
+            TextButton(onClick = { add(newName.trim()) }, enabled = newName.isNotBlank()) { Text("Neue Liste anlegen") }
         },
         dismissButton = { TextButton(onClick = onDone) { Text("Abbrechen") } },
     )
@@ -534,22 +755,26 @@ fun ContinueScreen(d: Deps) {
         if (recents.isEmpty()) {
             CenterMessage("Noch nichts angefangen.\nWähl links eine Bibliothek aus.")
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(150.dp),
-                contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp),
-            ) {
+            PosterGrid {
                 items(recents, key = { it.path }) { item ->
-                    Tile(
-                        d, Entry(item.path.substringAfterLast('/'), item.path, false),
-                        onClick = { ctx.play(listOf(item), 0) },
-                        onLongClick = {
-                            d.store.removeRecent(item.path)
-                            changed++
-                            Toast.makeText(ctx, "Aus „Weiterschauen“ entfernt", Toast.LENGTH_SHORT).show()
-                        },
-                    )
+                    val remove = {
+                        d.store.removeRecent(item.path)
+                        changed++
+                        Toast.makeText(ctx, "Aus „Weiterschauen“ entfernt", Toast.LENGTH_SHORT).show()
+                    }
+                    when (val v = classify(item.path)) {
+                        is Movie -> MovieTile(d, v, onClick = { ctx.play(listOf(item), 0) }, onLong = remove)
+                        is Episode -> {
+                            val meta by showMetaState(d, v.show, v.showYear)
+                            val (progress, watched) = progressOf(d, v.path)
+                            PosterTile(
+                                item.title, null, meta.poster?.let { TMDB_IMG + it },
+                                Icons.Filled.Tv, progress, watched,
+                                onClick = { ctx.play(listOf(item), 0) },
+                                onLong = remove,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -756,8 +981,12 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
                         Nas.diagnose(cfg) { text -> scope.launch { status = text } }
                     }
                 }) { Text("Verbindung testen") }
-                TextButton(onClick = { d.meta.clear(); status = "Poster werden beim nächsten Öffnen neu geladen." }) {
-                    Text("Poster neu laden")
+                TextButton(onClick = {
+                    d.meta.clear()
+                    d.libraries.clear()
+                    status = "Poster und Bibliotheken werden beim nächsten Öffnen neu geladen."
+                }) {
+                    Text("Alles neu laden")
                 }
             }
             status?.let { Text(it) }

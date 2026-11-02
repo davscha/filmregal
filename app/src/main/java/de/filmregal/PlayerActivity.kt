@@ -60,6 +60,9 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import org.videolan.libvlc.interfaces.IMedia
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
@@ -177,6 +180,26 @@ class PlayerActivity : ComponentActivity() {
         player.setMedia(media)
         media.release()
         player.play()
+        attachSubtitle(item.path)
+    }
+
+    /** Liegt "Film.srt" neben "Film.mp4", wird sie automatisch eingeblendet. */
+    private fun attachSubtitle(videoPath: String) {
+        val srtPath = videoPath.substringBeforeLast('.') + ".srt"
+        val cfg = d.settings.nas
+        lifecycleScope.launch {
+            val exists = withContext(Dispatchers.IO) {
+                try {
+                    Nas.openFile(cfg, srtPath).first.close()
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            if (exists && ::player.isInitialized) {
+                player.addSlave(IMedia.Slave.Type.Subtitle, Uri.parse(StreamServer.url(cfg, srtPath)), true)
+            }
+        }
     }
 
     private fun savePosition() {

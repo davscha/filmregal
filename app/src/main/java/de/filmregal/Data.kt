@@ -13,7 +13,7 @@ data class NasConfig(
     val user: String,
     val password: String,
 ) {
-    val isComplete get() = host.isNotBlank() && share.isNotBlank()
+    val isComplete get() = host.isNotBlank()
 }
 
 /** Ein Eintrag in einem NAS-Ordner (Unterordner oder Videodatei). */

@@ -82,6 +82,7 @@ object Nas {
 
     private fun smbUrl(cfg: NasConfig, path: String, dir: Boolean): String {
         val p = listOf(cfg.share, path).filter { it.isNotEmpty() }.joinToString("/")
+        if (p.isEmpty()) return "smb://${cfg.host}/"
         return "smb://${cfg.host}/$p" + if (dir) "/" else ""
     }
 

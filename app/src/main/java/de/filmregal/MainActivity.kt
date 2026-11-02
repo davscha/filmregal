@@ -675,7 +675,7 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
     val scope = rememberCoroutineScope()
     val saved = remember { d.settings.nas }
     var host by remember { mutableStateOf(saved.host.ifEmpty { "fritz.box" }) }
-    var share by remember { mutableStateOf(saved.share.ifEmpty { "FRITZ.NAS" }) }
+    var share by remember { mutableStateOf(saved.share) }
     var root by remember { mutableStateOf(saved.root) }
     var user by remember { mutableStateOf(saved.user) }
     var password by remember { mutableStateOf(saved.password) }
@@ -704,7 +704,7 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
             OutlinedTextField(
                 share, { share = it }, Modifier.fillMaxWidth(),
                 label = { Text("Freigabe") },
-                supportingText = { Text("Bei der FritzBox meist FRITZ.NAS") },
+                supportingText = { Text("Leer lassen, wenn der Startordner mit dem Freigabenamen beginnt (z. B. davscha78/…)") },
                 singleLine = true,
             )
             OutlinedTextField(

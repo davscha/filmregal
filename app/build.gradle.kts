@@ -16,7 +16,7 @@ android {
         targetSdk = 35
         versionCode = buildNumber
         versionName = "0.1.$buildNumber"
-        // Galaxy Tab S9+ ist 64-Bit-ARM – hält das APK klein
+        // Aktuelle Tablets sind 64-Bit-ARM – hält das APK klein
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

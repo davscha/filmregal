@@ -2,7 +2,7 @@
 
 Eigener Film- und Serien-Player für Android-Tablets mit Ordner-Bibliotheken wie bei Plex – ohne Server.
 
-- **Ordner-Bibliotheken:** Jeder Ordner im Startordner auf dem NAS (disney, pixar, marvel, star wars, hulu, vault …) erscheint automatisch in der Seitenleiste.
+- **Ordner-Bibliotheken:** Jeder Ordner im Startordner auf dem NAS (z. B. Kino, Klassiker, Kinder, Dokus, Anime …) erscheint automatisch in der Seitenleiste – darin werden Filme und Serien automatisch getrennt.
 - **Poster & Infos** von TMDB (eigener kostenloser API-Schlüssel nötig).
 - **AV1** über den Hardware-Decoder (libVLC), dazu MKV, DTS, AC3 und alle gängigen Untertitel.
 - **Weiterschauen**, Fortschrittsbalken und „gesehen“-Haken.
@@ -21,7 +21,7 @@ Eigener Film- und Serien-Player für Android-Tablets mit Ordner-Bibliotheken wie
 | --- | --- |
 | Adresse | `fritz.box` oder `192.168.178.1` |
 | Freigabe | `FRITZ.NAS` |
-| Startordner | Der Ordner, in dem disney, pixar … liegen, z. B. `Medien/Filme` |
+| Startordner | Der Ordner, in dem deine Bibliotheken liegen, z. B. `Medien` |
 | Benutzer / Passwort | FritzBox-Benutzer mit NAS-Rechten |
 
 In der FritzBox muss unter *Heimnetz → USB/Speicher → Heimnetzfreigabe* der Zugriff über SMB aktiv sein.

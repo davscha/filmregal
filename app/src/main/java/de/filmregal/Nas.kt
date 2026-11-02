@@ -17,7 +17,7 @@ val VIDEO_EXTENSIONS = setOf("mkv", "mp4", "m4v", "avi", "mov", "webm", "ts", "m
 
 object Nas {
     /**
-     * Ältere FritzBoxen (z. B. 7362 SL) können nur SMB1 und oft nur das alte
+     * Ältere FritzBoxen können nur SMB1 und oft nur das alte
      * NTLMv1-Anmeldeverfahren. Deshalb probieren wir mehrere Varianten durch
      * und merken uns die erste, die klappt.
      */

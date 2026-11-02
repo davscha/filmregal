@@ -1426,13 +1426,13 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
             OutlinedTextField(
                 share, { share = it }, Modifier.fillMaxWidth(),
                 label = { Text("Freigabe") },
-                supportingText = { Text("Leer lassen, wenn der Startordner mit dem Freigabenamen beginnt (z. B. davscha78/…)") },
+                supportingText = { Text("Leer lassen, wenn der Startordner mit dem Freigabenamen beginnt (z. B. Freigabe/USB-Platte/…)") },
                 singleLine = true,
             )
             OutlinedTextField(
                 root, { root = it }, Modifier.fillMaxWidth(),
                 label = { Text("Startordner") },
-                supportingText = { Text("Ordner, in dem disney, pixar, vault … liegen, z. B. Medien/Filme. Leer = oberste Ebene.") },
+                supportingText = { Text("Ordner, in dem deine Bibliotheken liegen, z. B. Medien. Leer = oberste Ebene.") },
                 singleLine = true,
             )
             OutlinedTextField(

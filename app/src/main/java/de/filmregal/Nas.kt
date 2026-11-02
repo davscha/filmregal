@@ -21,11 +21,46 @@ object Nas {
         val props = Properties().apply {
             setProperty("jcifs.smb.client.minVersion", "SMB1")
             setProperty("jcifs.smb.client.maxVersion", "SMB311")
-            setProperty("jcifs.smb.client.responseTimeout", "30000")
-            setProperty("jcifs.smb.client.soTimeout", "35000")
-            setProperty("jcifs.resolveOrder", "DNS,BCAST")
+            setProperty("jcifs.smb.client.connTimeout", "10000")
+            setProperty("jcifs.smb.client.responseTimeout", "15000")
+            setProperty("jcifs.smb.client.soTimeout", "20000")
+            setProperty("jcifs.smb.client.sessionTimeout", "20000")
+            setProperty("jcifs.netbios.retryTimeout", "3000")
+            setProperty("jcifs.resolveOrder", "DNS")
         }
         BaseContext(PropertyConfiguration(props))
+    }
+
+    /** Prüft Schritt für Schritt: Namensauflösung, Ports, Anmeldung, Ordnerliste. */
+    suspend fun diagnose(cfg: NasConfig, report: (String) -> Unit) = withContext(Dispatchers.IO) {
+        val lines = mutableListOf<String>()
+        fun say(s: String) { lines += s; report(lines.joinToString("\n")) }
+
+        val ip = try {
+            java.net.InetAddress.getByName(cfg.host).hostAddress.also { say("✓ ${cfg.host} → $it") }
+        } catch (e: Exception) {
+            say("✗ Adresse ${cfg.host} nicht gefunden – probier 192.168.178.1"); return@withContext
+        }
+        for (port in listOf(445, 139)) {
+            try {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress(ip, port), 4000) }
+                say("✓ Port $port offen")
+            } catch (e: Exception) {
+                say("✗ Port $port geschlossen (${e.javaClass.simpleName})")
+            }
+        }
+        say("… Anmeldung als ${cfg.user.ifBlank { "Gast" }} und Ordner lesen")
+        val start = System.currentTimeMillis()
+        try {
+            val list = list(cfg, cfg.root)
+            val dirs = list.filter { it.isDir }.map { it.name }
+            say("✓ Verbunden nach ${(System.currentTimeMillis() - start) / 1000} s. ${dirs.size} Ordner: ${dirs.joinToString(", ")}")
+        } catch (e: Exception) {
+            var t: Throwable? = e
+            val chain = mutableListOf<String>()
+            while (t != null && chain.size < 4) { chain += "${t.javaClass.simpleName}: ${t.message}"; t = t.cause }
+            say("✗ Fehler nach ${(System.currentTimeMillis() - start) / 1000} s:\n" + chain.joinToString("\n"))
+        }
     }
 
     private fun context(cfg: NasConfig): CIFSContext =

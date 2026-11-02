@@ -738,14 +738,9 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
                 }) { Text("Speichern") }
                 OutlinedButton(onClick = {
                     status = "Verbinde …"
+                    val cfg = current()
                     scope.launch {
-                        status = attempt { Nas.list(current(), current().root) }.fold(
-                            onSuccess = { list ->
-                                val dirs = list.filter { it.isDir }.map { it.name }
-                                "Verbunden. ${dirs.size} Ordner gefunden: ${dirs.joinToString(", ")}"
-                            },
-                            onFailure = { "Fehler: ${it.message ?: it.javaClass.simpleName}" },
-                        )
+                        Nas.diagnose(cfg) { text -> scope.launch { status = text } }
                     }
                 }) { Text("Verbindung testen") }
                 TextButton(onClick = { d.meta.clear(); status = "Poster werden beim nächsten Öffnen neu geladen." }) {
@@ -753,6 +748,9 @@ fun SettingsScreen(d: Deps, onSaved: () -> Unit) {
                 }
             }
             status?.let { Text(it) }
+            val ctx = LocalContext.current
+            val version = remember { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }
+            Text("Version $version", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

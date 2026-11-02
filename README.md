@@ -1,5 +1,7 @@
 # Filmregal
 
+> **Ein KI-Projekt:** Code, Oberfläche und Dokumentation dieser App wurden vollständig von **Claude** (KI-Assistent von Anthropic) geschrieben. Idee, Wünsche und Tests auf dem echten Gerät kamen vom Repo-Inhaber – ohne eigene Android-Programmierkenntnisse.
+
 Eigener Film- und Serien-Player für Android-Tablets mit Ordner-Bibliotheken wie bei Plex – ohne Server.
 
 - **Ordner-Bibliotheken:** Jeder Ordner im Startordner auf dem NAS (z. B. Kino, Klassiker, Kinder, Dokus, Anime …) erscheint automatisch in der Seitenleiste – darin werden Filme und Serien automatisch getrennt.

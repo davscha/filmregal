@@ -59,6 +59,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
     implementation("io.coil-kt:coil-compose:2.7.0")          // Poster laden
-    implementation("com.hierynomus:smbj:0.13.0")             // NAS / SMB2+3
+    implementation("eu.agno3.jcifs:jcifs-ng:2.1.10")         // NAS / SMB1 bis SMB3
     implementation("org.videolan.android:libvlc-all:3.5.1")  // Player inkl. AV1
 }

@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -43,6 +45,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -109,6 +114,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Wird bei jeder Rückkehr zur App erhöht, damit Fortschrittsbalken aktuell sind. */
@@ -163,6 +169,12 @@ fun Context.play(items: List<Item>, index: Int, fromStart: Boolean = false) {
     )
 }
 
+/** Welche Seite rechts gezeigt wird und für welche Person gerade gesucht wird. */
+object AppNav {
+    var screen: String by mutableStateOf("")
+    var person: Person? by mutableStateOf(null)
+}
+
 /** Welche Infoseite gerade offen ist (liegt über allem, wie bei Nova). */
 data class DetailTarget(val video: Video, val queue: List<Video>)
 
@@ -175,7 +187,8 @@ object DetailNav {
 @Composable
 fun App(d: Deps) {
     var nas by remember { mutableStateOf(d.settings.nas) }
-    var screen by rememberSaveable { mutableStateOf(if (nas.isComplete) "continue" else "settings") }
+    if (AppNav.screen.isEmpty()) AppNav.screen = if (nas.isComplete) "continue" else "settings"
+    val screen = AppNav.screen
     var libs by remember { mutableStateOf<List<Entry>>(emptyList()) }
     var libError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
@@ -197,17 +210,18 @@ fun App(d: Deps) {
             libs = libs,
             error = libError,
             screen = screen,
-            onSelect = { screen = it },
+            onSelect = { AppNav.screen = it },
             onReload = { reload++ },
         )
         Box(Modifier.weight(1f).fillMaxHeight()) {
             when {
                 screen.startsWith("lib:") -> key(screen) { LibraryScreen(d, nas, screen.removePrefix("lib:")) }
                 screen == "playlists" -> PlaylistsScreen(d)
+                screen == "search" -> SearchScreen(d)
                 screen == "settings" -> SettingsScreen(d) {
                     nas = d.settings.nas
                     reload++
-                    screen = "continue"
+                    AppNav.screen = "continue"
                 }
                 else -> ContinueScreen(d)
             }
@@ -241,6 +255,7 @@ fun Sidebar(
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
         NavItem("Weiterschauen", Icons.Filled.History, screen == "continue") { onSelect("continue") }
+        NavItem("Suche", Icons.Filled.Search, screen == "search") { onSelect("search") }
 
         SectionLabel("Bibliotheken")
         libs.forEach { lib ->
@@ -333,6 +348,9 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
     var openShow by rememberSaveable { mutableStateOf<String?>(null) }
     var openSeason by rememberSaveable { mutableStateOf<Int?>(null) }
     var addTarget by remember { mutableStateOf<Pair<String, List<Video>>?>(null) }
+    var sort by rememberSaveable { mutableStateOf("title") }
+    var genre by rememberSaveable { mutableIntStateOf(-1) }
+    var prefetched by remember { mutableIntStateOf(0) }
 
     // Beim ersten Öffnen oder wenn der letzte Scan älter als 6 Stunden ist: im Hintergrund neu durchsuchen
     LaunchedEffect(scanTick) {
@@ -353,8 +371,39 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
     }
 
     val lib = data
+
+    // Infos aller Titel im Hintergrund laden, damit Sortieren, Genres und Schauspielersuche vollständig sind
+    LaunchedEffect(lib) {
+        val l = lib ?: return@LaunchedEffect
+        var n = 0
+        l.movies.forEach {
+            d.meta.movie(it)
+            if (++n % 10 == 0) prefetched++
+        }
+        l.shows.forEach {
+            d.meta.show(it.name, it.year)
+            if (++n % 5 == 0) prefetched++
+        }
+        prefetched++
+    }
+
     val effectiveMode = mode.ifEmpty {
         if (lib != null && lib.movies.isEmpty() && lib.shows.isNotEmpty()) "serien" else "filme"
+    }
+    val version = MetaVersion.tick.intValue
+    val movies = remember(lib, sort, genre, prefetched, version) {
+        lib?.let { arrangeMovies(d, it.movies, sort, genre) }.orEmpty()
+    }
+    val shows = remember(lib, sort, genre, prefetched, version) {
+        lib?.let { arrangeShows(d, it.shows, sort, genre) }.orEmpty()
+    }
+    val genreChoices = remember(lib, effectiveMode, prefetched, version) {
+        val ids = when {
+            lib == null -> emptyList()
+            effectiveMode == "serien" -> lib.shows.flatMap { d.meta.peekShow(it.name, it.year)?.genres.orEmpty() }
+            else -> lib.movies.flatMap { d.meta.peekMovie(it)?.genres.orEmpty() }
+        }
+        ids.distinct().mapNotNull { id -> Genres.names[id]?.let { id to it } }.sortedBy { it.second }
     }
     val show = lib?.shows?.firstOrNull { it.name == openShow }
     val season = openSeason
@@ -389,6 +438,30 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
             }
             IconButton(onClick = { scanTick++ }, enabled = !scanning) {
                 Icon(Icons.Filled.Refresh, "Neu durchsuchen")
+            }
+        }
+        if (show == null && lib != null) {
+            Row(
+                Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MenuButton(
+                    Icons.Filled.FilterList,
+                    Genres.names[genre] ?: "Alle Genres",
+                    listOf("-1" to "Alle Genres") + genreChoices.map { it.first.toString() to it.second },
+                    genre.toString(),
+                ) { genre = it.toInt() }
+                MenuButton(
+                    Icons.AutoMirrored.Filled.Sort,
+                    SORTS.first { it.first == sort }.second,
+                    SORTS,
+                    sort,
+                ) { sort = it }
+                if (genre >= 0) {
+                    val n = if (effectiveMode == "serien") shows.size else movies.size
+                    Text("$n Treffer", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         if (scanning) {
@@ -426,20 +499,106 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
             effectiveMode == "serien" ->
                 if (lib.shows.isEmpty()) {
                     CenterMessage("Keine Serien gefunden.\nFolgen werden an S01E01 im Dateinamen erkannt.")
+                } else if (shows.isEmpty()) {
+                    CenterMessage("Keine Serien in diesem Genre.")
                 } else {
                     ShowGrid(
-                        d, lib.shows,
+                        d, shows,
                         onOpen = { openShow = it.name; openSeason = null },
                         onLong = { s -> addTarget = "Ganze Serie „${s.name}“" to s.episodes },
                     )
                 }
             else ->
                 if (lib.movies.isEmpty()) CenterMessage("Keine Filme gefunden.")
-                else MovieGrid(d, lib.movies) { m -> addTarget = "Film" to listOf(m) }
+                else if (movies.isEmpty()) CenterMessage("Keine Filme in diesem Genre.")
+                else MovieGrid(d, movies) { m -> addTarget = "Film" to listOf(m) }
         }
     }
 
     addTarget?.let { (label, videos) -> AddToPlaylistDialog(d, label, videos) { addTarget = null } }
+}
+
+val SORTS = listOf(
+    "title" to "Titel A–Z",
+    "added" to "Zuletzt hinzugefügt",
+    "year_desc" to "Neueste zuerst",
+    "year_asc" to "Älteste zuerst",
+    "rating" to "Beste Bewertung",
+)
+
+private fun <T> sortItems(
+    items: List<T>,
+    sort: String,
+    title: (T) -> String,
+    year: (T) -> Int,
+    rating: (T) -> Double,
+    added: (T) -> Long,
+): List<T> {
+    val byTitle = Comparator<T> { a, b -> naturalCompare(title(a), title(b)) }
+    val primary: Comparator<T>? = when (sort) {
+        "year_desc" -> compareByDescending(year)
+        "year_asc" -> compareBy(year)
+        "rating" -> compareByDescending(rating)
+        "added" -> compareByDescending(added)
+        else -> null
+    }
+    return items.sortedWith(primary?.then(byTitle) ?: byTitle)
+}
+
+fun arrangeMovies(d: Deps, list: List<Movie>, sort: String, genre: Int): List<Movie> {
+    val metas = list.associate { it.path to d.meta.peekMovie(it) }
+    val filtered = if (genre < 0) list else list.filter { metas[it.path]?.genres?.contains(genre) == true }
+    return sortItems(
+        filtered, sort,
+        title = { metas[it.path]?.title ?: it.title },
+        year = { (metas[it.path]?.year ?: it.year)?.toIntOrNull() ?: 0 },
+        rating = { metas[it.path]?.rating ?: 0.0 },
+        added = { it.added },
+    )
+}
+
+fun arrangeShows(d: Deps, list: List<Show>, sort: String, genre: Int): List<Show> {
+    val metas = list.associate { it.name to d.meta.peekShow(it.name, it.year) }
+    val filtered = if (genre < 0) list else list.filter { metas[it.name]?.genres?.contains(genre) == true }
+    return sortItems(
+        filtered, sort,
+        title = { metas[it.name]?.title ?: it.name },
+        year = { (metas[it.name]?.year ?: it.year)?.toIntOrNull() ?: 0 },
+        rating = { metas[it.name]?.rating ?: 0.0 },
+        added = { it.added },
+    )
+}
+
+@Composable
+fun MenuButton(
+    icon: ImageVector,
+    label: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) {
+            Icon(icon, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { (key, text) ->
+                DropdownMenuItem(
+                    text = { Text(text) },
+                    leadingIcon = {
+                        if (key == selected) Icon(Icons.Filled.Check, null) else Spacer(Modifier.size(24.dp))
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(key)
+                    },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -499,18 +658,23 @@ fun showMetaState(d: Deps, name: String, year: String?): androidx.compose.runtim
 fun ShowGrid(d: Deps, shows: List<Show>, onOpen: (Show) -> Unit, onLong: (Show) -> Unit) {
     PosterGrid {
         items(shows, key = { it.name }) { s ->
-            val meta by showMetaState(d, s.name, s.year)
-            val n = s.seasons.size
-            PosterTile(
-                meta.title,
-                "$n ${if (n == 1) "Staffel" else "Staffeln"} · ${s.episodes.size} Folgen",
-                meta.poster?.let { TMDB_IMG + it },
-                Icons.Filled.Tv, 0f, false,
-                onClick = { onOpen(s) },
-                onLong = { onLong(s) },
-            )
+            ShowTile(d, s, onClick = { onOpen(s) }, onLong = { onLong(s) })
         }
     }
+}
+
+@Composable
+fun ShowTile(d: Deps, s: Show, onClick: () -> Unit, onLong: () -> Unit) {
+    val meta by showMetaState(d, s.name, s.year)
+    val n = s.seasons.size
+    PosterTile(
+        meta.title,
+        "$n ${if (n == 1) "Staffel" else "Staffeln"} · ${s.episodes.size} Folgen",
+        meta.poster?.let { TMDB_IMG + it },
+        Icons.Filled.Tv, 0f, false,
+        onClick = onClick,
+        onLong = onLong,
+    )
 }
 
 @Composable
@@ -780,6 +944,8 @@ data class DetailInfo(
     val backdrop: String?,
     val still: String? = null,
     val hasInfo: Boolean = true,
+    val id: Int = 0,
+    val genres: String? = null,
 )
 
 private fun ratingText(r: Double?) = r?.let { "★ " + "%.1f".format(it) }
@@ -787,7 +953,7 @@ private fun ratingText(r: Double?) = r?.let { "★ " + "%.1f".format(it) }
 fun peekDetail(d: Deps, v: Video): DetailInfo = when (v) {
     is Movie -> {
         val m = d.meta.peekMovie(v) ?: Meta(v.title, null, null, v.year)
-        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop, hasInfo = m.id != 0)
+        movieInfo(m)
     }
     is Episode -> {
         val s = d.meta.peekShow(v.show, v.showYear) ?: Meta(v.show, null, null, v.showYear)
@@ -799,13 +965,22 @@ fun peekDetail(d: Deps, v: Video): DetailInfo = when (v) {
 suspend fun loadDetail(d: Deps, v: Video): DetailInfo = when (v) {
     is Movie -> {
         val m = d.meta.movie(v)
-        DetailInfo(m.title, listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "), m.overview, m.poster, m.backdrop, hasInfo = m.id != 0)
+        movieInfo(m)
     }
     is Episode -> {
         val s = d.meta.show(v.show, v.showYear)
         episodeInfo(v, s, d.meta.season(s.id, v.season))
     }
 }
+
+private fun movieInfo(m: Meta) = DetailInfo(
+    m.title,
+    listOfNotNull(m.year, ratingText(m.rating)).joinToString("  ·  "),
+    m.overview, m.poster, m.backdrop,
+    hasInfo = m.id != 0,
+    id = m.id,
+    genres = Genres.of(m.genres).joinToString(", ").ifEmpty { null },
+)
 
 private fun episodeInfo(v: Episode, s: Meta, season: SeasonMeta?): DetailInfo {
     val em = season?.episodes?.get(v.number)
@@ -818,6 +993,8 @@ private fun episodeInfo(v: Episode, s: Meta, season: SeasonMeta?): DetailInfo {
         backdrop = s.backdrop,
         still = em?.still,
         hasInfo = s.id != 0,
+        id = s.id,
+        genres = Genres.of(s.genres).joinToString(", ").ifEmpty { null },
     )
 }
 
@@ -829,6 +1006,9 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
     val info by produceState(peekDetail(d, v), v.path, version) { value = loadDetail(d, v) }
     var editor by remember { mutableStateOf<String?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
+    val credits by produceState<Credits?>(null, info.id) {
+        value = if (info.id != 0) d.meta.credits(kindOf(v), info.id) else null
+    }
     val tick = UiRefresh.tick.intValue
     var changed by remember { mutableIntStateOf(0) }
     val position = remember(tick, changed) { d.store.position(v.path) }
@@ -918,6 +1098,14 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
+                info.genres?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
                 Spacer(Modifier.height(28.dp))
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -979,6 +1167,32 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
                     )
                 }
 
+                credits?.let { c ->
+                    if (c.directors.isNotEmpty()) {
+                        Text(
+                            "Regie: " + c.directors.joinToString(", "),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.padding(top = 20.dp),
+                        )
+                    }
+                    if (c.cast.isNotEmpty()) {
+                        Text(
+                            "Besetzung",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            modifier = Modifier.padding(top = 24.dp, bottom = 10.dp),
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            items(c.cast) { p ->
+                                PersonCard(p.name, p.character, p.profile) {
+                                    openPerson(Person(p.id, p.name, p.profile, null))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(24.dp))
                 TextButton(onClick = { d.store.setWatched(v.path, !watched); changed++ }) {
                     Icon(Icons.Filled.Check, null)
@@ -1034,6 +1248,282 @@ fun DetailScreen(d: Deps, target: DetailTarget) {
             "poster", "backdrop" -> ImagePickerScreen(d, v, editor!!) { editor = null }
         }
     }
+}
+
+/** Zeigt in der Suche alle eigenen Filme und Serien dieser Person. */
+fun openPerson(p: Person) {
+    AppNav.person = p
+    AppNav.screen = "search"
+    DetailNav.current = null
+}
+
+@Composable
+fun PersonCard(name: String, sub: String?, profile: String?, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .width(120.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            if (profile != null) {
+                AsyncImage(
+                    model = TMDB_PROFILE + profile,
+                    contentDescription = name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.Person, null,
+                    Modifier.align(Alignment.Center).size(48.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        if (!sub.isNullOrBlank()) {
+            Text(
+                sub,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.6f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Suche
+
+@Composable
+fun SearchScreen(d: Deps) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val person = AppNav.person
+    var openShow by remember { mutableStateOf<Show?>(null) }
+    var openSeason by remember { mutableStateOf<Int?>(null) }
+    var addTarget by remember { mutableStateOf<Pair<String, List<Video>>?>(null) }
+    var prefetched by remember { mutableIntStateOf(0) }
+    val version = MetaVersion.tick.intValue
+    val all = remember { d.libraries.all() }
+
+    BackHandler(enabled = openShow != null || person != null) {
+        when {
+            openSeason != null -> openSeason = null
+            openShow != null -> openShow = null
+            else -> AppNav.person = null
+        }
+    }
+
+    val people by produceState<List<Person>>(emptyList(), query, person) {
+        val q = query.trim()
+        if (person != null || q.length < 3) {
+            value = emptyList()
+            return@produceState
+        }
+        delay(400)
+        value = attempt { d.meta.searchPeople(q) }.getOrDefault(emptyList())
+    }
+    val credits by produceState<Set<String>?>(null, person?.id) {
+        value = person?.let { d.meta.personCredits(it.id) }
+    }
+    // Für die Schauspielersuche müssen alle Titel ihre TMDB-Zuordnung haben
+    LaunchedEffect(person?.id) {
+        if (person == null) return@LaunchedEffect
+        var n = 0
+        all.movies.forEach {
+            if (d.meta.peekMovie(it) == null) {
+                d.meta.movie(it)
+                if (++n % 10 == 0) prefetched++
+            }
+        }
+        all.shows.forEach {
+            if (d.meta.peekShow(it.name, it.year) == null) {
+                d.meta.show(it.name, it.year)
+                prefetched++
+            }
+        }
+        prefetched++
+    }
+
+    val q = query.trim().lowercase()
+    val results = remember(q, person?.id, credits, version, prefetched, all) {
+        when {
+            person != null -> {
+                val c = credits.orEmpty()
+                all.movies.filter { m -> d.meta.peekMovie(m)?.id?.let { "movie:$it" in c } == true } to
+                    all.shows.filter { s -> d.meta.peekShow(s.name, s.year)?.id?.let { "tv:$it" in c } == true }
+            }
+            q.length >= 2 -> {
+                all.movies.filter { m ->
+                    m.title.lowercase().contains(q) || d.meta.peekMovie(m)?.title?.lowercase()?.contains(q) == true
+                } to all.shows.filter { s ->
+                    s.name.lowercase().contains(q) || d.meta.peekShow(s.name, s.year)?.title?.lowercase()?.contains(q) == true
+                }
+            }
+            else -> emptyList<Movie>() to emptyList<Show>()
+        }
+    }
+    val (movies, shows) = results
+
+    val current = openShow
+    if (current != null) {
+        val season = openSeason
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { if (openSeason != null) openSeason = null else openShow = null }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück")
+                }
+                Text(
+                    if (season != null) "${current.name}  ›  Staffel $season" else current.name,
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            if (season != null) {
+                EpisodeList(d, current, season) { e -> addTarget = "Folge ${e.code}" to listOf(e) }
+            } else {
+                SeasonGrid(
+                    d, current,
+                    onOpen = { openSeason = it },
+                    onLong = { n -> addTarget = "Staffel $n" to current.seasons[n].orEmpty() },
+                )
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxSize()) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    AppNav.person = null
+                },
+                placeholder = { Text("Titel oder Schauspieler suchen") },
+                leadingIcon = { Icon(Icons.Filled.Search, null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "Leeren") }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 800.dp),
+            )
+            if (person != null) {
+                Row(
+                    Modifier
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .padding(start = 6.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        person.profile?.let {
+                            AsyncImage(
+                                model = TMDB_PROFILE + it,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                    Text(
+                        "Filme & Serien mit ${person.name}",
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    IconButton(onClick = { AppNav.person = null }) { Icon(Icons.Filled.Close, "Schließen") }
+                }
+            }
+
+            PosterGrid {
+                if (people.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Column {
+                            SearchSection("Schauspieler")
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                items(people, key = { it.id }) { p ->
+                                    PersonCard(p.name, p.knownFor, p.profile) { openPerson(p) }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (movies.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { SearchSection("Filme (${movies.size})") }
+                    items(movies, key = { "m|" + it.path }) { m ->
+                        MovieTile(
+                            d, m,
+                            onClick = { DetailNav.current = DetailTarget(m, listOf(m)) },
+                            onLong = { addTarget = "Film" to listOf(m) },
+                        )
+                    }
+                }
+                if (shows.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) { SearchSection("Serien (${shows.size})") }
+                    items(shows, key = { "s|" + it.name }) { s ->
+                        ShowTile(
+                            d, s,
+                            onClick = { openShow = s; openSeason = null },
+                            onLong = { addTarget = "Ganze Serie „${s.name}“" to s.episodes },
+                        )
+                    }
+                }
+                val message = when {
+                    all.videos.isEmpty() -> "Noch keine Bibliothek durchsucht.\nÖffne links zuerst deine Bibliotheken."
+                    person != null && credits == null -> "Suche Filme mit ${person.name} …"
+                    person != null && movies.isEmpty() && shows.isEmpty() -> "Keine Filme oder Serien mit ${person.name} in deiner Sammlung."
+                    person == null && q.length < 2 -> "Gib mindestens 2 Buchstaben ein.\nAb 3 Buchstaben werden auch Schauspieler gesucht."
+                    person == null && movies.isEmpty() && shows.isEmpty() && people.isEmpty() -> "Nichts gefunden."
+                    else -> null
+                }
+                if (message != null) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(top = 48.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    addTarget?.let { (label, videos) -> AddToPlaylistDialog(d, label, videos) { addTarget = null } }
+}
+
+@Composable
+fun SearchSection(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+    )
 }
 
 // ---------------------------------------------------------------- Editor

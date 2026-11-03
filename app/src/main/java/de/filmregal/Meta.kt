@@ -25,7 +25,28 @@ data class Meta(
     val rating: Double? = null,
     /** Poster wurde von Hand gewählt → hat Vorrang vor Staffelpostern. */
     val customPoster: Boolean = false,
+    val genres: List<Int> = emptyList(),
 )
+
+data class CastMember(val id: Int, val name: String, val character: String, val profile: String?)
+data class Credits(val cast: List<CastMember>, val directors: List<String>)
+data class Person(val id: Int, val name: String, val profile: String?, val knownFor: String?)
+
+const val TMDB_PROFILE = "https://image.tmdb.org/t/p/w185"
+
+/** TMDB-Genre-IDs (Filme und Serien) auf Deutsch. */
+object Genres {
+    val names = mapOf(
+        28 to "Action", 12 to "Abenteuer", 16 to "Animation", 35 to "Komödie", 80 to "Krimi",
+        99 to "Dokumentarfilm", 18 to "Drama", 10751 to "Familie", 14 to "Fantasy", 36 to "Historie",
+        27 to "Horror", 10402 to "Musik", 9648 to "Mystery", 10749 to "Liebesfilm", 878 to "Science Fiction",
+        10770 to "TV-Film", 53 to "Thriller", 10752 to "Kriegsfilm", 37 to "Western",
+        10759 to "Action & Abenteuer", 10762 to "Kinder", 10763 to "Nachrichten", 10764 to "Reality",
+        10765 to "Sci-Fi & Fantasy", 10766 to "Seifenoper", 10767 to "Talk", 10768 to "Krieg & Politik",
+    )
+
+    fun of(ids: List<Int>) = ids.mapNotNull { names[it] }
+}
 
 /** Ein Suchtreffer im Editor. */
 data class Candidate(val title: String, val year: String?, val poster: String?, val overview: String?, val json: JSONObject)
@@ -69,7 +90,7 @@ object Titles {
 
 /** Holt Poster, Beschreibungen und Episodentitel von TMDB und merkt sie sich dauerhaft. */
 class MetaRepo(context: Context, private val settings: Settings) {
-    private val file = File(context.filesDir, "meta3.json")
+    private val file = File(context.filesDir, "meta4.json")
     private val cache: JSONObject = try { JSONObject(file.readText()) } catch (e: Exception) { JSONObject() }
     private val writeLock = Mutex()
 
@@ -120,6 +141,7 @@ class MetaRepo(context: Context, private val settings: Settings) {
         .put("overview", m.overview.orEmpty())
         .put("year", m.year.orEmpty())
         .put("rating", m.rating ?: 0.0)
+        .put("genres", JSONArray(m.genres))
 
     private fun overrideMeta(k: String, fallbackTitle: String, fallbackYear: String?): Meta? {
         val o = override(k) ?: return null
@@ -154,6 +176,83 @@ class MetaRepo(context: Context, private val settings: Settings) {
                 )
             }
         }
+    }
+
+    /** Besetzung und Regie. [kind] = "movie" oder "tv". */
+    suspend fun credits(kind: String, id: Int): Credits? {
+        if (id == 0) return null
+        val o = fetch("c|$kind|$id") { key ->
+            val src = get(key, if (kind == "tv") "tv/$id/aggregate_credits" else "movie/$id/credits", emptyMap())
+            val cast = JSONArray()
+            val a = src.optJSONArray("cast") ?: JSONArray()
+            for (i in 0 until minOf(a.length(), 30)) {
+                val c = a.getJSONObject(i)
+                val role = c.str("character").ifEmpty {
+                    c.optJSONArray("roles")?.optJSONObject(0)?.let { r -> if (r.isNull("character")) "" else r.optString("character") }.orEmpty()
+                }
+                cast.put(
+                    JSONObject()
+                        .put("id", c.optInt("id"))
+                        .put("name", c.str("name"))
+                        .put("character", role)
+                        .put("profile", c.str("profile_path"))
+                )
+            }
+            val directors = JSONArray()
+            val crew = src.optJSONArray("crew") ?: JSONArray()
+            for (i in 0 until crew.length()) {
+                val c = crew.getJSONObject(i)
+                val job = c.str("job").ifEmpty {
+                    c.optJSONArray("jobs")?.optJSONObject(0)?.let { j -> if (j.isNull("job")) "" else j.optString("job") }.orEmpty()
+                }
+                if (job == "Director" && kind == "movie") directors.put(c.str("name"))
+            }
+            JSONObject().put("cast", cast).put("directors", directors)
+        } ?: return null
+        val cast = o.optJSONArray("cast") ?: JSONArray()
+        val dirs = o.optJSONArray("directors") ?: JSONArray()
+        return Credits(
+            (0 until cast.length()).map { i ->
+                val c = cast.getJSONObject(i)
+                CastMember(c.optInt("id"), c.optString("name"), c.optString("character"), c.optString("profile").ifEmpty { null })
+            },
+            (0 until dirs.length()).map { dirs.optString(it) }.distinct(),
+        )
+    }
+
+    /** Schauspieler suchen (nicht gecacht, Ergebnisse ändern sich). */
+    suspend fun searchPeople(query: String): List<Person> {
+        val apiKey = settings.tmdbKey
+        if (apiKey.isBlank() || query.isBlank()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            results(get(apiKey, "search/person", mapOf("query" to query)))
+                .filter { it.str("known_for_department").let { d -> d.isEmpty() || d == "Acting" } }
+                .take(15)
+                .map { r ->
+                    val known = r.optJSONArray("known_for")?.let { a ->
+                        (0 until a.length()).map { a.getJSONObject(it) }
+                            .map { it.str("title").ifEmpty { it.str("name") } }
+                            .filter { it.isNotBlank() }.take(2).joinToString(", ")
+                    }
+                    Person(r.optInt("id"), r.str("name"), r.str("profile_path").ifEmpty { null }, known?.ifEmpty { null })
+                }
+        }
+    }
+
+    /** Alle Filme und Serien einer Person als "movie:123" / "tv:456". */
+    suspend fun personCredits(personId: Int): Set<String> {
+        val o = fetch("p|$personId") { key ->
+            val src = get(key, "person/$personId/combined_credits", emptyMap())
+            val ids = JSONArray()
+            val cast = src.optJSONArray("cast") ?: JSONArray()
+            for (i in 0 until cast.length()) {
+                val c = cast.getJSONObject(i)
+                ids.put(c.str("media_type") + ":" + c.optInt("id"))
+            }
+            JSONObject().put("ids", ids)
+        } ?: return emptySet()
+        val a = o.optJSONArray("ids") ?: JSONArray()
+        return (0 until a.length()).map { a.optString(it) }.toSet()
     }
 
     /** Alle Poster bzw. Hintergrundbilder eines Films oder einer Serie. */
@@ -245,6 +344,7 @@ class MetaRepo(context: Context, private val settings: Settings) {
                 backdrop = o.optString("backdrop").ifEmpty { null },
                 rating = o.optDouble("rating").takeIf { !it.isNaN() && it > 0 },
                 customPoster = o.optBoolean("custom"),
+                genres = o.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.optInt(it) } }.orEmpty(),
             )
         }
 
@@ -278,6 +378,7 @@ class MetaRepo(context: Context, private val settings: Settings) {
             .put("rating", r.optDouble("vote_average", 0.0))
             .put("overview", r.str("overview"))
             .put("year", date.take(4))
+            .put("genres", r.optJSONArray("genre_ids") ?: JSONArray())
     }
 
     private fun yearOf(r: JSONObject) =

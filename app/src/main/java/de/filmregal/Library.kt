@@ -11,9 +11,18 @@ import org.json.JSONObject
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
-sealed interface Video { val path: String }
+sealed interface Video {
+    val path: String
+    /** Wann die Datei aufs NAS kam (ms), 0 = unbekannt. */
+    val added: Long
+}
 
-data class Movie(override val path: String, val title: String, val year: String?) : Video
+data class Movie(
+    override val path: String,
+    val title: String,
+    val year: String?,
+    override val added: Long = 0,
+) : Video
 
 data class Episode(
     override val path: String,
@@ -21,11 +30,13 @@ data class Episode(
     val showYear: String?,
     val season: Int,
     val number: Int,
+    override val added: Long = 0,
 ) : Video {
     val code get() = "S%02dE%02d".format(season, number)
 }
 
 data class Show(val name: String, val year: String?, val episodes: List<Episode>) {
+    val added: Long get() = episodes.maxOfOrNull { it.added } ?: 0
     val seasons: Map<Int, List<Episode>> get() = episodes.groupBy { it.season }.toSortedMap()
 }
 
@@ -45,7 +56,7 @@ data class LibraryData(val videos: List<Video>, val scannedAt: Long) {
 }
 
 /** Entscheidet anhand des Dateinamens: Folge (S01E01, 1x02 …) oder Film. */
-fun classify(path: String): Video {
+fun classify(path: String, added: Long = 0): Video {
     val file = path.substringAfterLast('/')
     val base = file.substringBeforeLast('.')
     val m = Titles.episode.find(base)
@@ -62,10 +73,10 @@ fun classify(path: String): Video {
             show = c.first
             year = c.second
         }
-        return Episode(path, show, year, season, number)
+        return Episode(path, show, year, season, number, added)
     }
     val (title, year) = Titles.clean(file, isDir = false)
-    return Movie(path, title, year)
+    return Movie(path, title, year, added)
 }
 
 /** Durchsucht eine Bibliothek inklusive aller Unterordner und speichert das Ergebnis. */
@@ -77,18 +88,39 @@ class LibraryStore(context: Context) {
 
     fun load(root: String): LibraryData? = memory[root] ?: try {
         val o = JSONObject(fileFor(root).readText())
-        val a = o.getJSONArray("paths")
-        LibraryData((0 until a.length()).map { classify(a.getString(it)) }, o.getLong("scannedAt"))
-            .also { memory[root] = it }
+        parse(o).also { memory[root] = it }
     } catch (e: Exception) {
         null
+    }
+
+    private fun parse(o: JSONObject): LibraryData {
+        val a = o.getJSONArray("paths")
+        val added = o.optJSONArray("added")
+        return LibraryData(
+            (0 until a.length()).map { classify(a.getString(it), added?.optLong(it) ?: 0L) },
+            o.getLong("scannedAt"),
+        )
     }
 
     private fun save(root: String, data: LibraryData) {
         memory[root] = data
         val a = JSONArray()
-        data.videos.forEach { a.put(it.path) }
-        fileFor(root).writeText(JSONObject().put("scannedAt", data.scannedAt).put("paths", a).toString())
+        val added = JSONArray()
+        data.videos.forEach {
+            a.put(it.path)
+            added.put(it.added)
+        }
+        fileFor(root).writeText(
+            JSONObject().put("root", root).put("scannedAt", data.scannedAt).put("paths", a).put("added", added).toString()
+        )
+    }
+
+    /** Alle durchsuchten Bibliotheken zusammen (für die Suche). */
+    fun all(): LibraryData {
+        val videos = dir.listFiles()?.flatMap { f ->
+            runCatching { parse(JSONObject(f.readText())).videos }.getOrDefault(emptyList())
+        }.orEmpty()
+        return LibraryData(videos.distinctBy { it.path }, 0)
     }
 
     /** Alle Folgen derselben Serie aus allen gespeicherten Bibliotheken (für "Nächste Folge"). */
@@ -96,10 +128,9 @@ class LibraryStore(context: Context) {
         dir.listFiles()?.forEach { f ->
             runCatching {
                 val o = JSONObject(f.readText())
-                val a = o.getJSONArray("paths")
-                val paths = (0 until a.length()).map { a.getString(it) }
-                if (paths.contains(e.path)) {
-                    return LibraryData(paths.map { classify(it) }, 0).shows
+                val lib = parse(o)
+                if (lib.videos.any { it.path == e.path }) {
+                    return lib.shows
                         .firstOrNull { it.name.equals(e.show, ignoreCase = true) }?.episodes ?: listOf(e)
                 }
             }
@@ -133,7 +164,7 @@ class LibraryStore(context: Context) {
                         }
                     }.awaitAll()
                 }
-                lists.flatten().forEach { e -> if (e.isDir) next += e.path else videos += classify(e.path) }
+                lists.flatten().forEach { e -> if (e.isDir) next += e.path else videos += classify(e.path, e.added) }
                 folders += batch.size
                 progress(folders, videos.size)
             }

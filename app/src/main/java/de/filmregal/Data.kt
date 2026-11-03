@@ -17,7 +17,7 @@ data class NasConfig(
 }
 
 /** Ein Eintrag in einem NAS-Ordner (Unterordner oder Videodatei). */
-data class Entry(val name: String, val path: String, val isDir: Boolean)
+data class Entry(val name: String, val path: String, val isDir: Boolean, val added: Long = 0)
 
 /** Etwas Abspielbares: Pfad auf dem NAS plus Anzeigename. */
 data class Item(

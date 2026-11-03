@@ -103,11 +103,15 @@ object Nas {
                 dir.listFiles().mapNotNull { f ->
                     val isDir = f.name.endsWith("/")
                     val name = f.name.trimEnd('/')
+                    // Zeitstempel kommen mit der Ordnerliste, kosten also keine extra Anfrage
+                    val added = if (isDir) 0L else runCatching {
+                        f.createTime().takeIf { it > 0 } ?: f.lastModified()
+                    }.getOrDefault(0L)
                     f.close()
                     if (name.startsWith(".") || name.startsWith("@") || name.startsWith("$") || name.endsWith("$")) return@mapNotNull null
                     if (isDir && name.lowercase() in SYSTEM_FOLDERS) return@mapNotNull null
                     if (!isDir && name.substringAfterLast('.', "").lowercase() !in VIDEO_EXTENSIONS) return@mapNotNull null
-                    Entry(name, joinPath(path, name), isDir)
+                    Entry(name, joinPath(path, name), isDir, added)
                 }
             }
         }.sortedWith { a, b ->

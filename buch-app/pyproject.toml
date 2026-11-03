@@ -1,0 +1,21 @@
+[project]
+name = "filmregal"
+version = "1.0.0"
+description = "Meine Film- und Serien-App"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==1.0.5",
+    "flet-video==1.0.5",
+    "pysmb==1.2.15",
+    "requests",
+]
+
+[tool.flet]
+product = "Filmregal"
+org = "de.beispiel"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.android]
+permission."android.permission.INTERNET" = true

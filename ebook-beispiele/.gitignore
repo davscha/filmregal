@@ -1,0 +1,6 @@
+konsole/src/
+app/src/main/java/
+lauf/
+build/
+.gradle/
+*/build/

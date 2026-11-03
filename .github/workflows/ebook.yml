@@ -1,0 +1,32 @@
+name: eBook-Beispiele testen
+
+on:
+  push:
+    branches: [ebook-beispiele]
+  workflow_dispatch:
+
+jobs:
+  testen:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ebook-beispiele
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Beispiele verteilen
+        run: python3 vorbereiten.py quelle
+      - name: Konsolenbeispiele übersetzen
+        run: gradle :konsole:installDist --continue
+      - name: Konsolenbeispiele ausführen
+        if: always()
+        run: ./ausfuehren.sh
+      - name: Android-Beispiele übersetzen
+        if: always()
+        run: gradle :app:assembleDebug --continue

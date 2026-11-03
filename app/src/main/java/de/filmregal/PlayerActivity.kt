@@ -41,6 +41,10 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -109,6 +113,7 @@ class PlayerActivity : ComponentActivity() {
     private var hasVideo by mutableStateOf(false)
     private var fill by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
+    private var countdown by mutableIntStateOf(-1)   // Sekunden bis zum nächsten Titel, -1 = aus
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -215,6 +220,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun load(i: Int) {
         index = i
+        countdown = -1
         time = 0
         length = 0
         error = null
@@ -260,6 +266,12 @@ class PlayerActivity : ComponentActivity() {
     private fun onEnded() {
         val len = maxOf(length, 1L)
         d.store.savePosition(items[index], len, len)
+        if (index < items.lastIndex) countdown = 10 else finish()
+    }
+
+    /** Nächsten Titel starten und einen laufenden Countdown beenden. */
+    private fun playNext() {
+        countdown = -1
         if (index < items.lastIndex) load(index + 1) else finish()
     }
 
@@ -361,12 +373,14 @@ class PlayerActivity : ComponentActivity() {
                     )
                 }
         ) {
-            if (!hasVideo) LoadingScreen(items[index])
+            if (countdown >= 0 && index < items.lastIndex) {
+                NextUp(items[index + 1], countdown)
+            } else if (!hasVideo) LoadingScreen(items[index])
             else if (buffering < 100f && playing) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center).size(56.dp), color = Color.White)
             }
 
-            AnimatedVisibility(visible && hasVideo, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(visible && hasVideo && countdown < 0, enter = fadeIn(), exit = fadeOut()) {
                 Box(Modifier.fillMaxSize()) {
                     TopBar(menu) { menu = it }
                     CenterButtons(Modifier.align(Alignment.Center))
@@ -577,12 +591,62 @@ class PlayerActivity : ComponentActivity() {
                     Spacer(Modifier.width(16.dp))
                     TextButton(onClick = {
                         savePosition()
-                        load(index + 1)
+                        playNext()
                     }) {
                         Text("Nächster Titel", color = Color.White)
                         Spacer(Modifier.size(6.dp))
                         Icon(Icons.Filled.SkipNext, null, tint = Color.White)
                     }
+                }
+            }
+        }
+    }
+
+    /** Wie bei Netflix: Nach dem Ende einer Folge läuft ein Countdown, dann startet die nächste. */
+    @Composable
+    private fun NextUp(next: Item, seconds: Int) {
+        LaunchedEffect(seconds) {
+            if (seconds <= 0) playNext()
+            else {
+                delay(1000)
+                if (countdown == seconds) countdown = seconds - 1
+            }
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            next.backdrop?.let {
+                AsyncImage(
+                    model = TMDB_BACKDROP + it,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.35f,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Column(
+                Modifier.align(Alignment.BottomStart).padding(48.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text("Nächste Folge in $seconds s", color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.titleLarge)
+                Text(
+                    next.title, color = Color.White, fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.headlineMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                LinearProgressIndicator(
+                    progress = { (10 - seconds) / 10f },
+                    modifier = Modifier.width(360.dp).height(4.dp),
+                    color = Color.White,
+                    trackColor = Color.White.copy(alpha = 0.25f),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = { playNext() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Jetzt abspielen")
+                    }
+                    OutlinedButton(onClick = { finish() }) { Text("Schließen", color = Color.White) }
                 }
             }
         }

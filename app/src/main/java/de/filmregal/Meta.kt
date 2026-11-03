@@ -54,7 +54,7 @@ data class Candidate(val title: String, val year: String?, val poster: String?, 
 /** Wird erhöht, wenn im Editor etwas geändert wurde → Kacheln und Infoseiten laden neu. */
 object MetaVersion { val tick = androidx.compose.runtime.mutableIntStateOf(0) }
 
-data class EpisodeMeta(val name: String, val still: String?, val overview: String?)
+data class EpisodeMeta(val name: String, val still: String?, val overview: String?, val minutes: Int? = null)
 data class SeasonMeta(val poster: String?, val episodes: Map<Int, EpisodeMeta>)
 
 const val TMDB_IMG = "https://image.tmdb.org/t/p/w342"
@@ -314,7 +314,12 @@ class MetaRepo(context: Context, private val settings: Settings) {
 
     suspend fun season(showId: Int, season: Int): SeasonMeta? {
         if (showId == 0) return null
-        return fetch("s|$showId|$season") { key -> loadSeason(key, showId, season) }?.let { toSeason(it) }
+        val k = "s|$showId|$season"
+        // Ältere Zwischenspeicher-Einträge kennen die Laufzeit noch nicht → einmal neu laden
+        cached(k)?.let { c ->
+            if (c.has("episodes") && !c.has("v2")) synchronized(cache) { cache.remove(k) }
+        }
+        return fetch(k) { key -> loadSeason(key, showId, season) }?.let { toSeason(it) }
     }
 
     fun clear() {
@@ -356,6 +361,7 @@ class MetaRepo(context: Context, private val settings: Settings) {
                 e.optString("name"),
                 e.optString("still").ifEmpty { null },
                 e.optString("overview").ifEmpty { null },
+                e.optInt("rt").takeIf { it > 0 },
             )
         }
         return SeasonMeta(o.optString("poster").ifEmpty { null }, map)
@@ -421,9 +427,10 @@ class MetaRepo(context: Context, private val settings: Settings) {
                     .put("name", e.str("name"))
                     .put("still", e.str("still_path"))
                     .put("overview", e.str("overview"))
+                    .put("rt", e.optInt("runtime", 0))
             )
         }
-        return JSONObject().put("poster", o.str("poster_path")).put("episodes", eps)
+        return JSONObject().put("poster", o.str("poster_path")).put("episodes", eps).put("v2", true)
     }
 
     private fun get(apiKey: String, path: String, params: Map<String, String>): JSONObject {

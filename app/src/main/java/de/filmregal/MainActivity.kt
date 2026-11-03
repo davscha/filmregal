@@ -760,7 +760,8 @@ fun ShowEpisodes(
             val (progress, watched) = progressOf(d, e.path)
             EpisodeRow(
                 e, seasonMeta?.episodes?.get(e.number), progress, watched,
-                onClick = { DetailNav.current = DetailTarget(e, eps) },
+                // Warteschlange über alle Staffeln, damit nach der letzten Folge die nächste Staffel weiterläuft
+                onClick = { DetailNav.current = DetailTarget(e, s.seasons.values.flatten()) },
                 onLong = { onAdd("Folge ${e.code}", listOf(e)) },
             )
         }
@@ -865,7 +866,11 @@ fun EpisodeRow(
         Column(Modifier.weight(1f).padding(start = 16.dp)) {
             val name = em?.name?.takeIf { it.isNotBlank() } ?: "Folge ${e.number}"
             Text("${e.number} – $name", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(e.code, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                listOfNotNull(e.code, em?.minutes?.let { "$it Min." }).joinToString("  ·  "),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             em?.overview?.let {
                 Text(
                     it,

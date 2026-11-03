@@ -709,7 +709,15 @@ fun ShowEpisodes(
         value = d.meta.season(showMeta.id, season)
     }
     var picking by remember { mutableStateOf(false) }
+    var actions by remember { mutableStateOf<Episode?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var editor by remember { mutableStateOf<String?>(null) }
+    val all = s.seasons.values.flatten()
+    val credits by produceState<Credits?>(null, showMeta.id, season) {
+        value = if (showMeta.id != 0) d.meta.credits("tv", showMeta.id, season) else null
+    }
 
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
@@ -754,17 +762,102 @@ fun ShowEpisodes(
                 IconButton(onClick = { onAdd("Staffel $season", eps) }) {
                     Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Staffel zur Wiedergabeliste")
                 }
+                Box {
+                    IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "Mehr") }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        val v = s.episodes.first()
+                        DropdownMenuItem(text = { Text("Info suchen / Serie zuordnen …") }, onClick = { menuOpen = false; editor = "search" })
+                        if (showMeta.id != 0) {
+                            DropdownMenuItem(text = { Text("Anderes Poster auswählen …") }, onClick = { menuOpen = false; editor = "poster" })
+                            DropdownMenuItem(text = { Text("Anderes Hintergrundbild …") }, onClick = { menuOpen = false; editor = "backdrop" })
+                            DropdownMenuItem(text = { Text("Info entfernen") }, onClick = { menuOpen = false; d.meta.removeInfo(v) })
+                        }
+                        if (d.meta.hasOverride(v)) {
+                            DropdownMenuItem(text = { Text("Automatische Erkennung wiederherstellen") }, onClick = { menuOpen = false; d.meta.resetOverride(v) })
+                        }
+                        HorizontalDivider()
+                        val allWatched = eps.all { d.store.isWatched(it.path) }
+                        DropdownMenuItem(
+                            text = { Text(if (allWatched) "Staffel als ungesehen markieren" else "Staffel als gesehen markieren") },
+                            onClick = {
+                                menuOpen = false
+                                eps.forEach { d.store.setWatched(it.path, !allWatched) }
+                                UiRefresh.tick.intValue++
+                            },
+                        )
+                    }
+                }
             }
         }
         itemsIndexed(eps, key = { _, e -> e.path }) { _, e ->
             val (progress, watched) = progressOf(d, e.path)
             EpisodeRow(
                 e, seasonMeta?.episodes?.get(e.number), progress, watched,
-                // Warteschlange über alle Staffeln, damit nach der letzten Folge die nächste Staffel weiterläuft
-                onClick = { DetailNav.current = DetailTarget(e, s.seasons.values.flatten()) },
-                onLong = { onAdd("Folge ${e.code}", listOf(e)) },
+                // Direkt abspielen. Die Warteschlange geht über alle Staffeln, damit es danach weitergeht.
+                onClick = { ctx.play(all.map { d.itemFor(it) }, all.indexOfFirst { it.path == e.path }.coerceAtLeast(0)) },
+                onLong = { actions = e },
             )
         }
+        credits?.cast?.takeIf { it.isNotEmpty() }?.let { cast ->
+            item(key = "cast") {
+                Column {
+                    Text(
+                        "Besetzung · Staffel $season",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 10.dp),
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        items(cast) { p ->
+                            PersonCard(p.name, p.character, p.profile) {
+                                openPerson(Person(p.id, p.name, p.profile, null))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+
+    when (editor) {
+        "search" -> MetaSearchScreen(d, s.episodes.first()) { editor = null }
+        "poster", "backdrop" -> ImagePickerScreen(d, s.episodes.first(), editor!!) { editor = null }
+    }
+    }
+
+    actions?.let { e ->
+        val watched = d.store.isWatched(e.path)
+        AlertDialog(
+            onDismissRequest = { actions = null },
+            title = { Text("Folge ${e.code}") },
+            text = {
+                Column {
+                    TextButton(onClick = { actions = null; onAdd("Folge ${e.code}", listOf(e)) }) {
+                        Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Zur Wiedergabeliste hinzufügen")
+                    }
+                    TextButton(onClick = {
+                        actions = null
+                        d.store.setWatched(e.path, !watched)
+                        UiRefresh.tick.intValue++
+                    }) {
+                        Icon(Icons.Filled.Check, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (watched) "Als ungesehen markieren" else "Als gesehen markieren")
+                    }
+                    TextButton(onClick = {
+                        actions = null
+                        ctx.play(all.map { d.itemFor(it) }, all.indexOfFirst { it.path == e.path }.coerceAtLeast(0), fromStart = true)
+                    }) {
+                        Icon(Icons.Filled.Replay, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Von Anfang abspielen")
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { actions = null }) { Text("Schließen") } },
+        )
     }
 
     if (picking) {
@@ -1831,7 +1924,10 @@ fun ContinueScreen(d: Deps) {
                             PosterTile(
                                 item.title, null, meta.poster?.let { TMDB_IMG + it },
                                 Icons.Filled.Tv, progress, watched,
-                                onClick = { DetailNav.current = DetailTarget(v, d.libraries.episodesOf(v)) },
+                                onClick = {
+                                    val queue = d.libraries.episodesOf(v)
+                                    ctx.play(queue.map { d.itemFor(it) }, queue.indexOfFirst { it.path == v.path }.coerceAtLeast(0))
+                                },
                                 onLong = remove,
                             )
                         }

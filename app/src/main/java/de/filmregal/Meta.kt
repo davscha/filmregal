@@ -179,10 +179,15 @@ class MetaRepo(context: Context, private val settings: Settings) {
     }
 
     /** Besetzung und Regie. [kind] = "movie" oder "tv". */
-    suspend fun credits(kind: String, id: Int): Credits? {
+    suspend fun credits(kind: String, id: Int, season: Int? = null): Credits? {
         if (id == 0) return null
-        val o = fetch("c|$kind|$id") { key ->
-            val src = get(key, if (kind == "tv") "tv/$id/aggregate_credits" else "movie/$id/credits", emptyMap())
+        val path = when {
+            kind == "tv" && season != null -> "tv/$id/season/$season/aggregate_credits"
+            kind == "tv" -> "tv/$id/aggregate_credits"
+            else -> "movie/$id/credits"
+        }
+        val o = fetch("c|$kind|$id" + (season?.let { "|s$it" } ?: "")) { key ->
+            val src = get(key, path, emptyMap())
             val cast = JSONArray()
             val a = src.optJSONArray("cast") ?: JSONArray()
             for (i in 0 until minOf(a.length(), 30)) {

@@ -1,0 +1,22 @@
+[project]
+name = "filmregal-py"
+version = "0.1.0"
+description = "Filmregal – Python/Flet-Prototyp"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==1.0.5",
+    "pysmb==1.2.15",
+    "requests",
+]
+
+[tool.flet]
+org = "de.filmregal"
+product = "Filmregal Py"
+company = "Filmregal"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.android]
+# Internet für NAS und TMDB
+permission."android.permission.INTERNET" = true

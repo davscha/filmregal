@@ -3,6 +3,7 @@ name: APK bauen
 on:
   push:
     branches: [main]
+    paths-ignore: ["flet-prototyp/**", ".github/workflows/flet.yml"]
   workflow_dispatch:
 
 permissions:

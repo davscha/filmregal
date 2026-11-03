@@ -13,8 +13,8 @@ fun String.istVideo(): Boolean = substringAfterLast('.').lowercase() in setOf("m
 fun main() {
     println(dauerText(135))                         // 2 h 15 min
     println(dauerText(45))                          // 45 min
-    println(begruessung("David"))                   // Hallo David
-    println(begruessung("David", sprache = "en"))   // Hello David
+    println(begruessung("Anna"))                   // Hallo Anna
+    println(begruessung("Anna", sprache = "en"))   // Hello Anna
     println("Vaiana [2026].MKV".istVideo())         // true
 
     val quadrat = { x: Int -> x * x }               // Lambda in einer Variablen

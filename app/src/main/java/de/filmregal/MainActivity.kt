@@ -43,6 +43,15 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.unit.sp
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Dialog
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -367,7 +376,8 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
     }
 
     BackHandler(enabled = openShow != null) {
-        if (openSeason != null) openSeason = null else openShow = null
+        openShow = null
+        openSeason = null
     }
 
     val lib = data
@@ -414,12 +424,11 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (show != null) {
-                IconButton(onClick = { if (openSeason != null) openSeason = null else openShow = null }) {
+                IconButton(onClick = { openShow = null; openSeason = null }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück")
                 }
             }
             val title = when {
-                show != null && season != null -> "${show.name}  ›  Staffel $season"
                 show != null -> show.name
                 else -> root.substringAfterLast('/').replaceFirstChar { it.uppercase() }
             }
@@ -488,13 +497,10 @@ fun LibraryScreen(d: Deps, nas: NasConfig, root: String) {
             lib == null -> CenterMessage("Noch nicht durchsucht.") {
                 Button(onClick = { scanTick++ }) { Text("Jetzt durchsuchen") }
             }
-            show != null && season != null -> EpisodeList(d, show, season) { e ->
-                addTarget = "Folge ${e.code}" to listOf(e)
-            }
-            show != null -> SeasonGrid(
-                d, show,
-                onOpen = { openSeason = it },
-                onLong = { n -> addTarget = "Staffel $n" to show.seasons[n].orEmpty() },
+            show != null -> ShowEpisodes(
+                d, show, season,
+                onSeason = { openSeason = it },
+                onAdd = { label, videos -> addTarget = label to videos },
             )
             effectiveMode == "serien" ->
                 if (lib.shows.isEmpty()) {
@@ -677,67 +683,132 @@ fun ShowTile(d: Deps, s: Show, onClick: () -> Unit, onLong: () -> Unit) {
     )
 }
 
-@Composable
-fun SeasonGrid(d: Deps, s: Show, onOpen: (Int) -> Unit, onLong: (Int) -> Unit) {
-    val showMeta by showMetaState(d, s.name, s.year)
-    val tick = UiRefresh.tick.intValue
-    Column(Modifier.fillMaxSize()) {
-        showMeta.overview?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp).widthIn(max = 900.dp),
-            )
-        }
-        PosterGrid {
-            items(s.seasons.entries.toList(), key = { it.key }) { (n, eps) ->
-                val seasonMeta by produceState(d.meta.peekSeason(showMeta.id, n), showMeta.id, n) {
-                    value = d.meta.season(showMeta.id, n)
-                }
-                val watched = remember(tick, eps) { eps.all { d.store.isWatched(it.path) } }
-                PosterTile(
-                    "Staffel $n",
-                    "${eps.size} ${if (eps.size == 1) "Folge" else "Folgen"}",
-                    (seasonMeta?.poster ?: showMeta.poster)?.let { TMDB_IMG + it },
-                    Icons.Filled.Tv, 0f, watched,
-                    onClick = { onOpen(n) },
-                    onLong = { onLong(n) },
-                )
-            }
-        }
-    }
+/** Staffel, mit der eine Serie startet: die mit einer angefangenen Folge, sonst die erste mit ungesehenen Folgen. */
+fun startSeason(d: Deps, s: Show): Int {
+    val seasons = s.seasons.keys.sorted()
+    return seasons.firstOrNull { n -> s.seasons[n].orEmpty().any { d.store.progress(it.path) > 0f && !d.store.isWatched(it.path) } }
+        ?: seasons.firstOrNull { n -> s.seasons[n].orEmpty().any { !d.store.isWatched(it.path) } }
+        ?: seasons.firstOrNull() ?: 1
 }
 
+/** Serienansicht wie bei Netflix: Beschreibung, Staffel-Auswahl als Combobox, darunter die Folgen. */
 @Composable
-fun EpisodeList(d: Deps, s: Show, season: Int, onLong: (Episode) -> Unit) {
+fun ShowEpisodes(
+    d: Deps,
+    s: Show,
+    chosenSeason: Int?,
+    onSeason: (Int) -> Unit,
+    onAdd: (String, List<Video>) -> Unit,
+) {
     val ctx = LocalContext.current
+    val start = remember(s) { startSeason(d, s) }
+    val season = chosenSeason?.takeIf { it in s.seasons } ?: start
     val eps = s.seasons[season].orEmpty()
     val showMeta by showMetaState(d, s.name, s.year)
     val seasonMeta by produceState(d.meta.peekSeason(showMeta.id, season), showMeta.id, season) {
         value = d.meta.season(showMeta.id, season)
     }
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(horizontal = 24.dp, vertical = 4.dp)) {
-            FilledTonalButton(onClick = { ctx.play(eps.map { d.itemFor(it) }, 0) }) {
-                Icon(Icons.Filled.PlayArrow, null)
-                Spacer(Modifier.width(6.dp))
-                Text("Staffel abspielen")
+    var picking by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        showMeta.overview?.let {
+            item(key = "overview") {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 900.dp),
+                )
             }
         }
-        LazyColumn(
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            itemsIndexed(eps, key = { _, e -> e.path }) { i, e ->
-                val (progress, watched) = progressOf(d, e.path)
-                EpisodeRow(
-                    e, seasonMeta?.episodes?.get(e.number), progress, watched,
-                    onClick = { DetailNav.current = DetailTarget(e, eps) },
-                    onLong = { onLong(e) },
+        item(key = "seasonbar") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Die "Combobox": dunkler Kasten mit Staffel und Pfeil, ein Tipp öffnet die Auswahl
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(enabled = s.seasons.size > 1) { picking = true }
+                        .padding(start = 18.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Staffel $season", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (s.seasons.size > 1) Icon(Icons.Filled.ArrowDropDown, "Staffel wählen")
+                }
+                Text(
+                    "${eps.size} ${if (eps.size == 1) "Folge" else "Folgen"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.weight(1f))
+                FilledTonalButton(onClick = { ctx.play(eps.map { d.itemFor(it) }, 0) }) {
+                    Icon(Icons.Filled.PlayArrow, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Staffel abspielen")
+                }
+                IconButton(onClick = { onAdd("Staffel $season", eps) }) {
+                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, "Staffel zur Wiedergabeliste")
+                }
+            }
+        }
+        itemsIndexed(eps, key = { _, e -> e.path }) { _, e ->
+            val (progress, watched) = progressOf(d, e.path)
+            EpisodeRow(
+                e, seasonMeta?.episodes?.get(e.number), progress, watched,
+                onClick = { DetailNav.current = DetailTarget(e, eps) },
+                onLong = { onAdd("Folge ${e.code}", listOf(e)) },
+            )
+        }
+    }
+
+    if (picking) {
+        SeasonPicker(s.seasons.keys.sorted(), season, onPick = { onSeason(it); picking = false }) { picking = false }
+    }
+}
+
+/** Auswahl wie bei Netflix: abgedunkelter Bildschirm, Staffeln mittig, gewählte groß und fett, unten ein X. */
+@Composable
+fun SeasonPicker(seasons: List<Int>, current: Int, onPick: (Int) -> Unit, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.88f))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onClose() },
+        ) {
+            val list = rememberLazyListState(initialFirstVisibleItemIndex = (seasons.indexOf(current) - 3).coerceAtLeast(0))
+            LazyColumn(
+                state = list,
+                modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(bottom = 120.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                contentPadding = PaddingValues(vertical = 48.dp),
+            ) {
+                items(seasons, key = { it }) { n ->
+                    val selected = n == current
+                    Text(
+                        "Staffel $n",
+                        color = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
+                        fontSize = if (selected) 30.sp else 24.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onPick(n) }
+                            .padding(horizontal = 32.dp, vertical = 12.dp),
+                    )
+                }
+            }
+            FilledIconButton(
+                onClick = onClose,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).size(72.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Color.Black),
+            ) {
+                Icon(Icons.Filled.Close, "Schließen", Modifier.size(36.dp))
             }
         }
     }
@@ -1323,8 +1394,7 @@ fun SearchScreen(d: Deps) {
 
     BackHandler(enabled = openShow != null || person != null) {
         when {
-            openSeason != null -> openSeason = null
-            openShow != null -> openShow = null
+            openShow != null -> { openShow = null; openSeason = null }
             else -> AppNav.person = null
         }
     }
@@ -1382,30 +1452,25 @@ fun SearchScreen(d: Deps) {
 
     val current = openShow
     if (current != null) {
-        val season = openSeason
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { if (openSeason != null) openSeason = null else openShow = null }) {
+                IconButton(onClick = { openShow = null; openSeason = null }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Zurück")
                 }
                 Text(
-                    if (season != null) "${current.name}  ›  Staffel $season" else current.name,
+                    current.name,
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            if (season != null) {
-                EpisodeList(d, current, season) { e -> addTarget = "Folge ${e.code}" to listOf(e) }
-            } else {
-                SeasonGrid(
-                    d, current,
-                    onOpen = { openSeason = it },
-                    onLong = { n -> addTarget = "Staffel $n" to current.seasons[n].orEmpty() },
-                )
-            }
+            ShowEpisodes(
+                d, current, openSeason,
+                onSeason = { openSeason = it },
+                onAdd = { label, videos -> addTarget = label to videos },
+            )
         }
     } else {
         Column(Modifier.fillMaxSize()) {
